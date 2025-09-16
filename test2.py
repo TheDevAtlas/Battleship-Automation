@@ -15,7 +15,8 @@ from multiprocessing import cpu_count
 import threading
 from queue import Queue
 from collections import deque
-import time
+from dataclasses import dataclass
+import math
 
 # --- Launch BlueStacks (unchanged) ---
 subprocess.Popen([
@@ -53,10 +54,10 @@ TEMPLATES = [
 
 MIN_MASK_AREA = 500
 MAX_WORKERS = min(4, cpu_count())
-SCALE_FACTOR = 0.5  # Further reduced for even faster processing
-DETECTION_FPS_TARGET = 8   # Reduced detection FPS for more stable performance
-DISPLAY_FPS_TARGET = 60    # Keep display smooth
-CAPTURE_FPS_TARGET = 45    # Dedicated capture thread FPS
+SCALE_FACTOR = 0.5
+DETECTION_FPS_TARGET = 8
+DISPLAY_FPS_TARGET = 60
+CAPTURE_FPS_TARGET = 45
 
 # Global variables
 cached_monitor = None
@@ -73,6 +74,243 @@ matches_lock = threading.Lock()
 
 detection_frame_queue = Queue(maxsize=1)  # Only latest frame for detection
 stop_threads = threading.Event()
+
+# ===================== GRID TRACKER (Board State + Next Move) =====================
+
+def hex_to_bgr(h: str):
+    h = h.strip().lstrip('#')
+    r = int(h[0:2], 16); g = int(h[2:4], 16); b = int(h[4:6], 16)
+    return (b, g, r)
+
+def bgr_to_lab(bgr):
+    c = np.array([[bgr]], dtype=np.uint8)
+    lab = cv2.cvtColor(c, cv2.COLOR_BGR2LAB)[0,0,:].astype(np.float32)
+    return lab
+
+REF_BGR = {
+    "HIT":  hex_to_bgr("EC242D"),  # red
+    "SUNK": hex_to_bgr("000000"),  # black
+    "MISS": hex_to_bgr("3F5887"),  # blue
+    "BG":   hex_to_bgr("10306B"),  # dark bg (unknown)
+}
+REF_LAB = {k: bgr_to_lab(v) for k,v in REF_BGR.items()}
+
+THRESH = {
+    "SUNK": 10.0,
+    "HIT":  20.0,
+    "MISS": 16.0,
+    "BG":   18.0,
+}
+
+def lab_dist(a, b):
+    return float(np.linalg.norm(a - b))
+
+UNKNOWN, MISS, HIT, SUNK = 0, 1, 2, 3
+STATE_NAME = {UNKNOWN:"UNK", MISS:"MISS", HIT:"HIT", SUNK:"SUNK"}
+
+@dataclass
+class GridParams:
+    start_x: int = 1027+16
+    start_y: int = 385+16
+    dot_diameter: int = 71
+    grid_size: int = 10
+    sample_radius: int = 8   # px around center to average
+    stable_frames: int = 3   # debounce window
+
+class GridTracker:
+    def __init__(self, params: GridParams):
+        self.p = params
+        g = self.p.grid_size
+        self.state = np.full((g, g), UNKNOWN, dtype=np.uint8)
+        self.history = [[deque(maxlen=self.p.stable_frames) for _ in range(g)] for __ in range(g)]
+        self.last_seen_lab = np.zeros((g, g, 3), dtype=np.float32)
+        self.last_reason = ""
+        self._precompute_centers()
+
+    def _precompute_centers(self):
+        self.centers = []
+        r = self.p.dot_diameter // 2
+        for row in range(self.p.grid_size):
+            row_centers = []
+            for col in range(self.p.grid_size):
+                cx = self.p.start_x + (col * self.p.dot_diameter) + r
+                cy = self.p.start_y + (row * self.p.dot_diameter) + r
+                row_centers.append((cx, cy))
+            self.centers.append(row_centers)
+
+    def _sample_lab(self, frame, row, col):
+        h, w = frame.shape[:2]
+        cx, cy = self.centers[row][col]
+        sr = self.p.sample_radius
+        x1 = max(0, cx - sr); x2 = min(w, cx + sr)
+        y1 = max(0, cy - sr); y2 = min(h, cy + sr)
+        patch = frame[y1:y2, x1:x2]
+        if patch.size == 0:
+            return None
+        mean_bgr = tuple(map(int, np.mean(patch.reshape(-1,3), axis=0)))
+        return bgr_to_lab(mean_bgr)
+
+    def _classify_lab(self, lab_color):
+        if lab_color is None:
+            return None
+        # strong near-black heuristic for sunk
+        if lab_color[0] < 18:
+            return SUNK
+        d = {k: lab_dist(lab_color, REF_LAB[k]) for k in REF_LAB.keys()}
+        for name in ["SUNK","HIT","MISS","BG"]:
+            if d[name] <= THRESH[name]:
+                if name == "SUNK": return SUNK
+                if name == "HIT":  return HIT
+                if name == "MISS": return MISS
+                return UNKNOWN
+        return UNKNOWN
+
+    def update(self, frame_bgr):
+        g = self.p.grid_size
+        for r in range(g):
+            for c in range(g):
+                labc = self._sample_lab(frame_bgr, r, c)
+                if labc is not None:
+                    self.last_seen_lab[r, c] = labc
+                cls = self._classify_lab(labc)
+                if cls is None:
+                    continue
+                self.history[r][c].append(cls)
+                if len(self.history[r][c]) == self.p.stable_frames and len(set(self.history[r][c])) == 1:
+                    committed = self.history[r][c][0]
+                    if not (self.state[r, c] in (SUNK, HIT) and committed == UNKNOWN):
+                        self.state[r, c] = committed
+
+    def _nbrs4(self, r, c):
+        return [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]
+
+    def _is_unknown(self, r, c):
+        g = self.p.grid_size
+        return 0 <= r < g and 0 <= c < g and self.state[r, c] == UNKNOWN
+
+    def _is_miss(self, r, c):
+        g = self.p.grid_size
+        return 0 <= r < g and 0 <= c < g and self.state[r, c] == MISS
+
+    def _clusters(self, cells):
+        gset = set(cells)
+        clusters = []
+        while gset:
+            start = gset.pop()
+            comp = [start]
+            dq = deque([start])
+            while dq:
+                r,c = dq.popleft()
+                for rr,cc in self._nbrs4(r,c):
+                    if (rr,cc) in gset:
+                        gset.remove((rr,cc))
+                        comp.append((rr,cc))
+                        dq.append((rr,cc))
+            clusters.append(comp)
+        return clusters
+
+    def _best_target(self, candidates):
+        best = (-1, None, None)
+        why = ""
+        for (r,c,label) in candidates:
+            unk = sum(self._is_unknown(rr,cc) for rr,cc in self._nbrs4(r,c))
+            if unk > best[0]:
+                best = (unk, r, c); why = f"{label}, unknown-neighbors={unk}"
+        return (best[1], best[2], why)
+
+    def suggest_next(self):
+        unknown_cells = list(zip(*np.where(self.state == UNKNOWN)))
+        if not unknown_cells:
+            self.last_reason = "No UNKNOWN cells; board seems complete."
+            return None
+
+        hits = list(zip(*np.where(self.state == HIT)))
+        if hits:
+            clusters = self._clusters(hits)
+            clusters.sort(key=len, reverse=True)
+            for cluster in clusters:
+                rows = sorted(set([r for r,_ in cluster]))
+                cols = sorted(set([c for _,c in cluster]))
+                if len(rows) == 1:  # horizontal
+                    r = rows[0]
+                    minc = min(c for _,c in cluster)
+                    maxc = max(c for _,c in cluster)
+                    candidates = []
+                    if self._is_unknown(r, minc-1): candidates.append((r, minc-1, "extend left"))
+                    if self._is_unknown(r, maxc+1): candidates.append((r, maxc+1, "extend right"))
+                    if candidates:
+                        rc, cc, why = self._best_target(candidates)
+                        self.last_reason = f"Extending horizontal hit at row {r}: {why}"
+                        return (rc, cc, 100, self.last_reason)
+                elif len(cols) == 1:  # vertical
+                    c = cols[0]
+                    minr = min(r for r,_ in cluster)
+                    maxr = max(r for r,_ in cluster)
+                    candidates = []
+                    if self._is_unknown(minr-1, c): candidates.append((minr-1, c, "extend up"))
+                    if self._is_unknown(maxr+1, c): candidates.append((maxr+1, c, "extend down"))
+                    if candidates:
+                        rc, cc, why = self._best_target(candidates)
+                        self.last_reason = f"Extending vertical hit at col {c}: {why}"
+                        return (rc, cc, 100, self.last_reason)
+                # unknown orientation → probe around each hit
+                for (r,c) in cluster:
+                    neighbors = [(r-1,c,"up"),(r+1,c,"down"),(r,c-1,"left"),(r,c+1,"right")]
+                    cand = [(rr,cc,lab) for (rr,cc,lab) in neighbors if self._is_unknown(rr,cc)]
+                    if cand:
+                        rc, cc, why = self._best_target(cand)
+                        self.last_reason = f"Probing around hit at ({r},{c}): {why}"
+                        return (rc, cc, 90, self.last_reason)
+
+        # Hunt mode: parity + local unknown density
+        best = (-1e9, None, None)
+        for (r,c) in unknown_cells:
+            parity = 1 if (r + c) % 2 == 0 else 0
+            unk_n = sum(self._is_unknown(rr,cc) for rr,cc in self._nbrs4(r,c))
+            miss_close = sum(self._is_miss(rr,cc) for rr,cc in self._nbrs4(r,c))
+            score = parity*2 + unk_n*1.5 - miss_close*0.5
+            if score > best[0]:
+                best = (score, r, c)
+        _, br, bc = best
+        self.last_reason = "Hunt mode: parity + local unknown-neighbor density."
+        return (br, bc, float(best[0]), self.last_reason)
+
+    def render_overlay(self, frame):
+        overlay = frame.copy()
+        r = max(6, self.p.dot_diameter//2 - 16)
+        for row in range(self.p.grid_size):
+            for col in range(self.p.grid_size):
+                cx, cy = self.centers[row][col]
+                st = self.state[row, col]
+                if st == UNKNOWN: color = (180,180,180)
+                elif st == MISS:  color = (200,180,80)
+                elif st == HIT:   color = (0,0,255)
+                else:             color = (0,0,0)
+                cv2.circle(overlay, (cx,cy), r, color, 2)
+        sug = self.suggest_next()
+        if sug:
+            rr, cc, score, _ = sug
+            cx, cy = self.centers[rr][cc]
+            cv2.drawMarker(overlay, (cx,cy), (0,255,0), cv2.MARKER_CROSS, 28, 2)
+            cv2.putText(overlay, f"Next: ({rr},{cc}) score={score:.1f}",
+                        (10, 54), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2, cv2.LINE_AA)
+            cv2.putText(overlay, self.last_reason, (10, 82),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,255,0), 1, cv2.LINE_AA)
+        return overlay
+
+    def cell_center_px(self, row, col):
+        return self.centers[row][col]
+
+grid_tracker = GridTracker(GridParams(
+    start_x=1027+16,
+    start_y=385+16,
+    dot_diameter=71,
+    grid_size=10,
+    sample_radius=8,
+    stable_frames=3
+))
+
+# ===================== Window / Template Utilities =====================
 
 def find_bluestacks_window(title_hints):
     wins = gw.getAllTitles()
@@ -92,148 +330,91 @@ def get_client_rect(win):
     return left, top, right, bottom
 
 def load_template_and_mask(path, alpha_cutoff=10, scale_factor=1.0):
-    # Try to load the image
     tpl = cv2.imread(path, cv2.IMREAD_UNCHANGED)
     if tpl is None:
-        # Try with forward slashes
         path_alt = path.replace('\\', '/')
         tpl = cv2.imread(path_alt, cv2.IMREAD_UNCHANGED)
         if tpl is None:
             raise FileNotFoundError(f"Could not load template image: {path} (also tried: {path_alt})")
-    
-    print(f"Loaded template {path}: shape={tpl.shape}, dtype={tpl.dtype}")
-    
-    # Handle different image formats
     if tpl.ndim == 3 and tpl.shape[2] == 4:
-        # RGBA image
         bgr = tpl[:, :, :3]
         alpha = tpl[:, :, 3]
         mask = (alpha > alpha_cutoff).astype(np.uint8) * 255
-        print(f"  -> RGBA image, alpha pixels: {np.count_nonzero(alpha > alpha_cutoff)}")
     elif tpl.ndim == 3 and tpl.shape[2] == 3:
-        # RGB/BGR image
         bgr = tpl
         mask = np.full(bgr.shape[:2], 255, dtype=np.uint8)
-        print(f"  -> RGB/BGR image, full mask")
     elif tpl.ndim == 2:
-        # Grayscale image
         bgr = cv2.cvtColor(tpl, cv2.COLOR_GRAY2BGR)
         mask = np.full(bgr.shape[:2], 255, dtype=np.uint8)
-        print(f"  -> Grayscale image, full mask")
     else:
         raise ValueError(f"Unsupported image format: {tpl.shape} for {path}")
-    
     if scale_factor != 1.0:
         h, w = bgr.shape[:2]
         new_h, new_w = int(h * scale_factor), int(w * scale_factor)
         if new_h > 0 and new_w > 0:
             bgr = cv2.resize(bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
             mask = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
-            print(f"  -> Scaled to {new_w}x{new_h}")
-        else:
-            print(f"  -> Warning: Invalid scale factor {scale_factor} for size {w}x{h}")
-    
     return bgr, mask
 
 def prepare_templates(scale_factor=1.0):
     prepared = []
-    print(f"\n=== Loading Templates with scale factor {scale_factor} ===")
-    
-    for i, item in enumerate(TEMPLATES):
+    for item in TEMPLATES:
         try:
-            print(f"\n[{i+1}/{len(TEMPLATES)}] Processing: {item['name']}")
-            print(f"  Path: {item['path']}")
-            
-            # Check if file exists
             import os
             if not os.path.exists(item["path"]):
                 alt_path = item["path"].replace('\\', '/')
-                if not os.path.exists(alt_path):
-                    print(f"  ERROR: File not found at {item['path']} or {alt_path}")
-                    continue
-                else:
-                    print(f"  Found at alternate path: {alt_path}")
+                if os.path.exists(alt_path):
                     item["path"] = alt_path
-            
+                else:
+                    print(f"[WARN] Missing template: {item['path']}")
+                    continue
             tpl, m = load_template_and_mask(item["path"], ALPHA_CUTOFF, scale_factor)
             th, tw = tpl.shape[:2]
             mask_area = int(np.count_nonzero(m))
-            
-            print(f"  Template size: {tw}x{th}")
-            print(f"  Mask area: {mask_area} pixels")
-            print(f"  Min mask area threshold: {MIN_MASK_AREA}")
-            
-            template_data = {
-                "name": item["name"], 
-                "tpl": tpl, 
-                "mask": m, 
-                "size": (tw, th),
-                "sqdiff_thresh": item["sqdiff_thresh"], 
-                "uniqueness_min": item["uniqueness_min"],
-                "color": item["color"], 
-                "mask_area": mask_area,
-                "scale_factor": scale_factor,
-                "original_path": item["path"]
-            }
-            
             if mask_area >= MIN_MASK_AREA:
-                prepared.append(template_data)
-                print(f"  SUCCESS: Template added to processing list")
-            else:
-                print(f"  SKIPPED: Mask area {mask_area} < {MIN_MASK_AREA}")
-                
+                prepared.append({
+                    "name": item["name"],
+                    "tpl": tpl,
+                    "mask": m,
+                    "size": (tw, th),
+                    "sqdiff_thresh": item["sqdiff_thresh"],
+                    "uniqueness_min": item["uniqueness_min"],
+                    "color": item["color"],
+                    "mask_area": mask_area,
+                    "scale_factor": scale_factor,
+                    "original_path": item["path"]
+                })
         except Exception as e:
-            print(f"  ERROR loading {item['name']}: {e}")
-            import traceback
-            traceback.print_exc()
-            continue
-    
-    print(f"\n=== Template Loading Complete ===")
-    print(f"Successfully loaded {len(prepared)} out of {len(TEMPLATES)} templates")
-    for i, t in enumerate(prepared):
-        print(f"  [{i+1}] {t['name']} - {t['size'][0]}x{t['size'][1]} - {t['mask_area']} mask pixels")
-    print("=" * 50)
-    
+            print(f"[ERR] Loading {item['name']}: {e}")
+    print(f"Templates loaded: {len(prepared)}/{len(TEMPLATES)}")
     return prepared
 
 def fast_best_and_second_best(result, tw, th):
-    """Optimized version using numpy operations"""
     min_idx = np.unravel_index(np.argmin(result), result.shape)
     min_val = result[min_idx]
     min_loc = (min_idx[1], min_idx[0])
-    
     y0, x0 = min_idx
     y1 = max(0, y0 - th//4)
     y2 = min(result.shape[0], y0 + th//4 + 1)
     x1 = max(0, x0 - tw//4)
     x2 = min(result.shape[1], x0 + tw//4 + 1)
-    
     result_copy = result.copy()
     result_copy[y1:y2, x1:x2] = 1.0
-    min2 = np.min(result_copy)
-    
-    return min_loc, min_val, min2
+    min2 = float(np.min(result_copy))
+    return min_loc, float(min_val), min2
 
 def process_single_template(frame, template):
-    """Optimized single template processing with debug info"""
     try:
-        # Validate inputs
         if frame is None or template["tpl"] is None:
             return {"matched": False, "error": "Invalid input"}
-        
         if frame.shape[2] != 3 or template["tpl"].shape[2] != 3:
             return {"matched": False, "error": "Channel mismatch"}
-        
         res = cv2.matchTemplate(frame, template["tpl"], METHOD, mask=template["mask"])
-        
         if res.size == 0:
             return {"matched": False, "error": "Empty result"}
-            
         top_left, best, second = fast_best_and_second_best(res, *template["size"])
         uniqueness = second - best
         confidence = 1.0 - float(best)
-
-        # Debug info (you can remove this later)
         debug_info = {
             "best": best,
             "second": second,
@@ -242,7 +423,6 @@ def process_single_template(frame, template):
             "thresh": template["sqdiff_thresh"],
             "uniq_min": template["uniqueness_min"]
         }
-
         if best <= template["sqdiff_thresh"] and uniqueness >= template["uniqueness_min"]:
             scale = template["scale_factor"]
             if scale != 1.0:
@@ -250,7 +430,6 @@ def process_single_template(frame, template):
                 size = (int(template["size"][0] / scale), int(template["size"][1] / scale))
             else:
                 size = template["size"]
-                
             return {
                 "name": template["name"],
                 "top_left": top_left,
@@ -263,32 +442,19 @@ def process_single_template(frame, template):
                 "debug": debug_info
             }
         else:
-            # Return debug info for non-matches too (temporarily)
-            return {
-                "matched": False,
-                "name": template["name"],
-                "debug": debug_info
-            }
-            
+            return {"matched": False, "name": template["name"], "debug": debug_info}
     except Exception as e:
         print(f"Error processing template {template.get('name', 'unknown')}: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return {"matched": False, "error": str(e) if 'e' in locals() else "Unknown error"}
+    return {"matched": False, "error": "Unknown error"}
+
+# ===================== Threads =====================
 
 def capture_thread(win):
-    """Dedicated thread for screen capture only"""
     global latest_display_frame, cached_monitor, cached_window_rect, last_rect_check
-    
-    print("Capture thread started")
     capture_frame_time = 1.0 / CAPTURE_FPS_TARGET
-    
     with mss.mss() as sct:
         while not stop_threads.is_set():
             capture_start = time.time()
-            
-            # Update window rect less frequently
             current_time = time.time()
             if current_time - last_rect_check > RECT_CHECK_INTERVAL:
                 try:
@@ -300,21 +466,14 @@ def capture_thread(win):
                     last_rect_check = current_time
                 except Exception:
                     pass
-            
             if cached_monitor is None:
-                time.sleep(0.1)
+                time.sleep(0.05)
                 continue
-            
             try:
-                # Capture frame
                 img = np.array(sct.grab(cached_monitor))
                 frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-                
-                # Update display frame (thread-safe)
                 with display_frame_lock:
                     latest_display_frame = frame.copy()
-                
-                # Send scaled frame for detection (non-blocking)
                 if SCALE_FACTOR != 1.0:
                     h_orig, w_orig = frame.shape[:2]
                     h_new = int(h_orig * SCALE_FACTOR)
@@ -322,224 +481,117 @@ def capture_thread(win):
                     detection_frame = cv2.resize(frame, (w_new, h_new), interpolation=cv2.INTER_AREA)
                 else:
                     detection_frame = frame.copy()
-                
-                # Non-blocking put - if detection is busy, skip this frame
                 try:
                     detection_frame_queue.put_nowait(detection_frame)
                 except:
-                    pass  # Detection queue full, skip this frame
-                    
+                    pass
             except Exception as e:
                 print(f"Capture thread error: {e}")
-            
-            # Frame rate limiting
             capture_time = time.time() - capture_start
             if capture_time < capture_frame_time:
                 time.sleep(capture_frame_time - capture_time)
 
 def detection_thread(templates):
-    """Background thread for template detection only"""
     global current_matches
-    
-    print(f"Detection thread started with {len(templates)} templates")
     if len(templates) == 0:
         print("WARNING: No templates loaded for detection!")
         return
-        
     detection_frame_time = 1.0 / DETECTION_FPS_TARGET
-    detection_count = 0
-    last_debug_time = time.time()
-    
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         while not stop_threads.is_set():
             detection_start = time.time()
-            
             try:
-                # Get latest frame for detection (blocking with timeout)
                 try:
                     frame = detection_frame_queue.get(timeout=0.1)
                 except:
-                    continue  # No frame available, continue loop
-                
-                # Clear queue to always process latest frame
+                    continue
                 while not detection_frame_queue.empty():
                     try:
                         frame = detection_frame_queue.get_nowait()
                     except:
                         break
-                
-                # Process templates in parallel
                 if len(templates) > 1:
                     futures = [executor.submit(process_single_template, frame, t) for t in templates]
                     matches = [future.result() for future in futures]
                 else:
                     matches = [process_single_template(frame, templates[0])]
-                
-                # Debug output every 5 seconds
-                detection_count += 1
-                current_time = time.time()
-                if current_time - last_debug_time >= 5.0:
-                    print(f"\n=== Detection Debug (frame {detection_count}) ===")
-                    for i, match in enumerate(matches):
-                        if "debug" in match:
-                            debug = match["debug"]
-                            status = "MATCH" if match["matched"] else "NO_MATCH"
-                            print(f"  [{i+1}] {match.get('name', 'unknown')} - {status}")
-                            print(f"      best={debug['best']:.4f} (thresh={debug['thresh']:.4f})")
-                            print(f"      uniq={debug['uniqueness']:.4f} (min={debug['uniq_min']:.4f})")
-                            print(f"      conf={debug['confidence']:.4f}")
-                    last_debug_time = current_time
-                
-                # Update shared matches data (thread-safe)
                 with matches_lock:
                     current_matches.clear()
-                    current_matches.extend([m for m in matches if m["matched"]])
-                
+                    current_matches.extend([m for m in matches if m.get("matched")])
             except Exception as e:
                 print(f"Detection thread error: {e}")
-                import traceback
-                traceback.print_exc()
-            
-            # Frame rate limiting for detection
             detection_time = time.time() - detection_start
             if detection_time < detection_frame_time:
                 time.sleep(detection_frame_time - detection_time)
 
+# ===================== UX Helpers =====================
+
 def save_screenshot(frame_with_rectangles, matches):
-    """Save screenshot with timestamp and match info"""
     try:
         import os
         from datetime import datetime
-        
-        # Create screenshots directory if it doesn't exist
         screenshot_dir = "screenshots"
         if not os.path.exists(screenshot_dir):
             os.makedirs(screenshot_dir)
-        
-        # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"detection_screenshot_{timestamp}.png"
         filepath = os.path.join(screenshot_dir, filename)
-        
-        # Save the screenshot
         success = cv2.imwrite(filepath, frame_with_rectangles)
-        
         if success:
-            print(f"\n=== Screenshot Saved ===")
-            print(f"File: {filepath}")
+            print(f"\nSaved: {filepath}")
             print(f"Matches captured: {len(matches)}")
             for i, match in enumerate(matches):
-                print(f"  [{i+1}] {match['name']} at {match['top_left']} - confidence: {match['confidence']:.3f}")
-            print("=" * 30)
+                print(f"  [{i+1}] {match['name']} at {match['top_left']} - conf: {match['confidence']:.3f}")
         else:
             print(f"ERROR: Failed to save screenshot to {filepath}")
-            
     except Exception as e:
         print(f"Error saving screenshot: {e}")
-        import traceback
-        traceback.print_exc()
 
 def check_in_game_active(matches):
-    """Check if the 'In Game Marker' template is currently matched"""
     for match in matches:
         if match.get("name") == "In Game Marker":
             return True
     return False
 
-def draw_battleship_grid(frame, original_frame):
-    """Draw a 10x10 grid of circles with colors sampled from the original frame"""
-    # Grid parameters
-    grid_start_x = 1027+16
-    grid_start_y = 385+16
-    grid_size = 10
-    dot_diameter = 71
-    dot_radius = dot_diameter // 2 - 20
-    
-    # Sample radius - smaller than dot radius to avoid edge artifacts
-    sample_radius = max(5, dot_radius // 3)
-    
-    # Draw 10x10 grid of dots
-    for row in range(grid_size):
-        for col in range(grid_size):
-            # Calculate center position for each dot
-            center_x = grid_start_x + (col * dot_diameter) + dot_radius
-            center_y = grid_start_y + (row * dot_diameter) + dot_radius
-            
-            # Make sure we're within frame bounds
-            if (center_x - sample_radius >= 0 and 
-                center_x + sample_radius < original_frame.shape[1] and
-                center_y - sample_radius >= 0 and 
-                center_y + sample_radius < original_frame.shape[0]):
-                
-                # Sample a small area around the center to get the underlying color
-                sample_area = original_frame[
-                    center_y - sample_radius:center_y + sample_radius,
-                    center_x - sample_radius:center_x + sample_radius
-                ]
-                
-                # Calculate the mean color of the sampled area
-                if sample_area.size > 0:
-                    mean_color = tuple(map(int, np.mean(sample_area.reshape(-1, 3), axis=0)))
-                    
-                    # Draw filled circle with the sampled color
-                    cv2.circle(frame, (center_x, center_y), dot_radius, mean_color, -1)
-                    
-                    # Add a subtle border for better visibility (optional)
-                    # You can comment out this line if you don't want borders
-                    border_color = tuple(255 - c for c in mean_color)  # Inverted color for contrast
-                    cv2.circle(frame, (center_x, center_y), dot_radius, border_color, 2)
+# ===================== Display (Integrates Grid Tracker) =====================
 
 def display_thread():
-    """Main display thread for smooth video - UPDATED with conditional battleship grid"""
     global latest_display_frame, current_matches
-    
     print("Display thread started")
-    print("Press SPACEBAR to take a screenshot with detection rectangles")
+    print("[SPACE] screenshot | [N] print next move | [ESC/Q] quit")
     display_frame_time = 1.0 / DISPLAY_FPS_TARGET
-    
-    # FPS tracking
     frame_count = 0
     fps_start = time.time()
     display_fps = 0.0
-    
     while not stop_threads.is_set():
         display_start = time.time()
-        
         try:
-            # Get latest display frame (thread-safe)
             display_frame = None
             original_frame = None
             with display_frame_lock:
                 if latest_display_frame is not None:
-                    original_frame = latest_display_frame.copy()  # Keep original for color sampling
-                    display_frame = latest_display_frame.copy()   # Copy for drawing on
-            
+                    original_frame = latest_display_frame.copy()
+                    display_frame = latest_display_frame.copy()
             if display_frame is not None and original_frame is not None:
-                # Get current matches (thread-safe)
                 with matches_lock:
                     matches_to_draw = current_matches.copy()
-                
-                # Check if "In Game Marker" is active
                 in_game_active = check_in_game_active(matches_to_draw)
-                
-                # Draw battleship grid ONLY if In Game Marker is detected
+
+                # Update and draw board overlay only when in game
                 if in_game_active:
-                    draw_battleship_grid(display_frame, original_frame)
-                
+                    grid_tracker.update(original_frame)
+                    display_frame = grid_tracker.render_overlay(display_frame)
+
                 # Draw template matches
                 for match in matches_to_draw:
                     tw, th = match["size"]
                     br = (match["top_left"][0] + tw, match["top_left"][1] + th)
                     cv2.rectangle(display_frame, match["top_left"], br, match["color"], RECT_THICKNESS)
-                    
                     text = f'{match["name"]}: {match["confidence"]:.2f}'
-                    cv2.putText(
-                        display_frame, text,
-                        (match["top_left"][0], max(15, match["top_left"][1] - 6)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, match["color"], 1, cv2.LINE_AA
-                    )
-                
-                # FPS display
+                    cv2.putText(display_frame, text,
+                                (match["top_left"][0], max(15, match["top_left"][1] - 6)),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, match["color"], 1, cv2.LINE_AA)
+
                 if SHOW_FPS:
                     frame_count += 1
                     now = time.time()
@@ -547,65 +599,62 @@ def display_thread():
                         display_fps = frame_count / (now - fps_start)
                         frame_count = 0
                         fps_start = now
-                    
-                    # Show queue status, controls, and grid status
                     queue_size = detection_frame_queue.qsize()
                     grid_status = "ON" if in_game_active else "OFF"
-                    cv2.putText(display_frame, 
-                               f"Display: {display_fps:.1f} FPS | Matches: {len(matches_to_draw)} | Queue: {queue_size} | Grid: {grid_status}", 
+                    cv2.putText(display_frame,
+                               f"Display: {display_fps:.1f} FPS | Matches: {len(matches_to_draw)} | Queue: {queue_size} | Grid: {grid_status}",
                                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2, cv2.LINE_AA)
-                    
-                    # Add screenshot instruction
-                    cv2.putText(display_frame, 
-                               "Press SPACEBAR for screenshot | ESC/Q to quit", 
+                    cv2.putText(display_frame,
+                               "SPACE: screenshot   N: print next move   ESC/Q: quit",
                                (10, display_frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
-                
+
                 cv2.imshow("BlueStacks Live - Fully Threaded", display_frame)
-                
-                # Handle key events
+
                 key = cv2.waitKey(1) & 0xFF
-                if key == 27 or key == ord('q'):  # ESC or Q
+                if key == 27 or key == ord('q'):
                     stop_threads.set()
                     break
-                elif key == ord(' '):  # SPACEBAR
-                    # Take screenshot with current rectangles
+                elif key == ord(' '):
                     save_screenshot(display_frame, matches_to_draw)
-                
+                elif key == ord('n'):
+                    sug = grid_tracker.suggest_next()
+                    if sug:
+                        r, c, score, reason = sug
+                        px, py = grid_tracker.cell_center_px(r, c)
+                        print(f"Next move -> row={r}, col={c}, score={score:.1f}, px=({px},{py}) | {reason}")
+                    else:
+                        print("No next move: board has no UNKNOWN cells.")
         except Exception as e:
             print(f"Display thread error: {e}")
-        
-        # Frame rate limiting for display
+
         display_time = time.time() - display_start
         if display_time < display_frame_time:
             time.sleep(display_frame_time - display_time)
 
+# ===================== Main =====================
+
 def main():
     global cached_monitor, cached_window_rect
-    
     templates = prepare_templates(SCALE_FACTOR)
     templates = [t for t in templates if t["mask_area"] >= MIN_MASK_AREA]
     print(f"Processing {len(templates)} templates at {SCALE_FACTOR}x scale")
-    print(f"Target: {DISPLAY_FPS_TARGET} FPS display, {DETECTION_FPS_TARGET} FPS detection, {CAPTURE_FPS_TARGET} FPS capture")
+    print(f"Targets: display {DISPLAY_FPS_TARGET} FPS | detection {DETECTION_FPS_TARGET} FPS | capture {CAPTURE_FPS_TARGET} FPS")
 
     win = find_bluestacks_window(WINDOW_TITLE_HINTS)
     if not win:
         raise RuntimeError("Could not find a BlueStacks window. Adjust WINDOW_TITLE_HINTS.")
 
-    # Initialize window rect cache
     cached_window_rect = get_client_rect(win)
     left, top, right, bottom = cached_window_rect
     w = max(1, right - left)
     h = max(1, bottom - top)
     cached_monitor = {"left": left, "top": top, "width": w, "height": h}
 
-    # Start background threads
     capture_worker = threading.Thread(target=capture_thread, args=(win,), daemon=True)
     detection_worker = threading.Thread(target=detection_thread, args=(templates,), daemon=True)
-    
     capture_worker.start()
     detection_worker.start()
-    
-    # Run display in main thread
+
     try:
         display_thread()
     except KeyboardInterrupt:
