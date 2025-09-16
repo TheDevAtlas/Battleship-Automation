@@ -38,7 +38,7 @@ TEMPLATES = [
     {"name":"Start Game Ready Up", "path":r"ScreenElements\Start Game Ready Up.png",
      "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":CYAN},
     {"name":"In Game Marker", "path":r"ScreenElements\In Game Marker.png",
-     "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":GREEN},
+     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":GREEN},
     {"name":"Enemy Turn", "path":r"ScreenElements\Enemy Turn.png",
      "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":ORANGE},
 ]
@@ -397,11 +397,46 @@ def detection_thread(templates):
             if detection_time < detection_frame_time:
                 time.sleep(detection_frame_time - detection_time)
 
+def save_screenshot(frame_with_rectangles, matches):
+    """Save screenshot with timestamp and match info"""
+    try:
+        import os
+        from datetime import datetime
+        
+        # Create screenshots directory if it doesn't exist
+        screenshot_dir = "screenshots"
+        if not os.path.exists(screenshot_dir):
+            os.makedirs(screenshot_dir)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"detection_screenshot_{timestamp}.png"
+        filepath = os.path.join(screenshot_dir, filename)
+        
+        # Save the screenshot
+        success = cv2.imwrite(filepath, frame_with_rectangles)
+        
+        if success:
+            print(f"\n=== Screenshot Saved ===")
+            print(f"File: {filepath}")
+            print(f"Matches captured: {len(matches)}")
+            for i, match in enumerate(matches):
+                print(f"  [{i+1}] {match['name']} at {match['top_left']} - confidence: {match['confidence']:.3f}")
+            print("=" * 30)
+        else:
+            print(f"ERROR: Failed to save screenshot to {filepath}")
+            
+    except Exception as e:
+        print(f"Error saving screenshot: {e}")
+        import traceback
+        traceback.print_exc()
+
 def display_thread():
     """Main display thread for smooth video"""
     global latest_display_frame, current_matches
     
     print("Display thread started")
+    print("Press SPACEBAR to take a screenshot with detection rectangles")
     display_frame_time = 1.0 / DISPLAY_FPS_TARGET
     
     # FPS tracking
@@ -446,22 +481,30 @@ def display_thread():
                         frame_count = 0
                         fps_start = now
                     
-                    # Show queue status
+                    # Show queue status and controls
                     queue_size = detection_frame_queue.qsize()
                     cv2.putText(display_frame, 
                                f"Display: {display_fps:.1f} FPS | Matches: {len(matches_to_draw)} | Queue: {queue_size}", 
                                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2, cv2.LINE_AA)
+                    
+                    # Add screenshot instruction
+                    cv2.putText(display_frame, 
+                               "Press SPACEBAR for screenshot | ESC/Q to quit", 
+                               (10, display_frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
                 
                 cv2.imshow("BlueStacks Live - Fully Threaded", display_frame)
                 
+                # Handle key events
+                key = cv2.waitKey(1) & 0xFF
+                if key == 27 or key == ord('q'):  # ESC or Q
+                    stop_threads.set()
+                    break
+                elif key == ord(' '):  # SPACEBAR
+                    # Take screenshot with current rectangles
+                    save_screenshot(display_frame, matches_to_draw)
+                
         except Exception as e:
             print(f"Display thread error: {e}")
-        
-        # Handle key events
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27 or key == ord('q'):
-            stop_threads.set()
-            break
         
         # Frame rate limiting for display
         display_time = time.time() - display_start
