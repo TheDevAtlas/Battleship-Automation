@@ -38,9 +38,9 @@ TEMPLATES = [
     {"name":"Start Game Ready Up", "path":r"ScreenElements\Start Game Ready Up.png",
      "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":CYAN},
     {"name":"In Game Marker", "path":r"ScreenElements\In Game Marker.png",
-     "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":GREEN},
+     "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":GREEN},
     {"name":"Enemy Turn", "path":r"ScreenElements\Enemy Turn.png",
-     "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":ORANGE},
+     "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":ORANGE},
 ]
 
 MIN_MASK_AREA = 500
@@ -84,43 +84,108 @@ def get_client_rect(win):
     return left, top, right, bottom
 
 def load_template_and_mask(path, alpha_cutoff=10, scale_factor=1.0):
+    # Try to load the image
     tpl = cv2.imread(path, cv2.IMREAD_UNCHANGED)
     if tpl is None:
-        raise FileNotFoundError(f"Could not load template image: {path}")
+        # Try with forward slashes
+        path_alt = path.replace('\\', '/')
+        tpl = cv2.imread(path_alt, cv2.IMREAD_UNCHANGED)
+        if tpl is None:
+            raise FileNotFoundError(f"Could not load template image: {path} (also tried: {path_alt})")
     
+    print(f"Loaded template {path}: shape={tpl.shape}, dtype={tpl.dtype}")
+    
+    # Handle different image formats
     if tpl.ndim == 3 and tpl.shape[2] == 4:
+        # RGBA image
         bgr = tpl[:, :, :3]
         alpha = tpl[:, :, 3]
         mask = (alpha > alpha_cutoff).astype(np.uint8) * 255
-    else:
-        bgr = tpl if tpl.ndim == 3 else cv2.cvtColor(tpl, cv2.COLOR_GRAY2BGR)
+        print(f"  -> RGBA image, alpha pixels: {np.count_nonzero(alpha > alpha_cutoff)}")
+    elif tpl.ndim == 3 and tpl.shape[2] == 3:
+        # RGB/BGR image
+        bgr = tpl
         mask = np.full(bgr.shape[:2], 255, dtype=np.uint8)
+        print(f"  -> RGB/BGR image, full mask")
+    elif tpl.ndim == 2:
+        # Grayscale image
+        bgr = cv2.cvtColor(tpl, cv2.COLOR_GRAY2BGR)
+        mask = np.full(bgr.shape[:2], 255, dtype=np.uint8)
+        print(f"  -> Grayscale image, full mask")
+    else:
+        raise ValueError(f"Unsupported image format: {tpl.shape} for {path}")
     
     if scale_factor != 1.0:
         h, w = bgr.shape[:2]
         new_h, new_w = int(h * scale_factor), int(w * scale_factor)
-        bgr = cv2.resize(bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        mask = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        if new_h > 0 and new_w > 0:
+            bgr = cv2.resize(bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            mask = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            print(f"  -> Scaled to {new_w}x{new_h}")
+        else:
+            print(f"  -> Warning: Invalid scale factor {scale_factor} for size {w}x{h}")
     
     return bgr, mask
 
 def prepare_templates(scale_factor=1.0):
     prepared = []
-    for item in TEMPLATES:
+    print(f"\n=== Loading Templates with scale factor {scale_factor} ===")
+    
+    for i, item in enumerate(TEMPLATES):
         try:
+            print(f"\n[{i+1}/{len(TEMPLATES)}] Processing: {item['name']}")
+            print(f"  Path: {item['path']}")
+            
+            # Check if file exists
+            import os
+            if not os.path.exists(item["path"]):
+                alt_path = item["path"].replace('\\', '/')
+                if not os.path.exists(alt_path):
+                    print(f"  ERROR: File not found at {item['path']} or {alt_path}")
+                    continue
+                else:
+                    print(f"  Found at alternate path: {alt_path}")
+                    item["path"] = alt_path
+            
             tpl, m = load_template_and_mask(item["path"], ALPHA_CUTOFF, scale_factor)
             th, tw = tpl.shape[:2]
             mask_area = int(np.count_nonzero(m))
             
-            prepared.append({
-                "name": item["name"], "tpl": tpl, "mask": m, "size": (tw, th),
-                "sqdiff_thresh": item["sqdiff_thresh"], "uniqueness_min": item["uniqueness_min"],
-                "color": item["color"], "mask_area": mask_area,
-                "scale_factor": scale_factor
-            })
-        except FileNotFoundError as e:
-            print(f"Warning: {e}")
+            print(f"  Template size: {tw}x{th}")
+            print(f"  Mask area: {mask_area} pixels")
+            print(f"  Min mask area threshold: {MIN_MASK_AREA}")
+            
+            template_data = {
+                "name": item["name"], 
+                "tpl": tpl, 
+                "mask": m, 
+                "size": (tw, th),
+                "sqdiff_thresh": item["sqdiff_thresh"], 
+                "uniqueness_min": item["uniqueness_min"],
+                "color": item["color"], 
+                "mask_area": mask_area,
+                "scale_factor": scale_factor,
+                "original_path": item["path"]
+            }
+            
+            if mask_area >= MIN_MASK_AREA:
+                prepared.append(template_data)
+                print(f"  SUCCESS: Template added to processing list")
+            else:
+                print(f"  SKIPPED: Mask area {mask_area} < {MIN_MASK_AREA}")
+                
+        except Exception as e:
+            print(f"  ERROR loading {item['name']}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
+    
+    print(f"\n=== Template Loading Complete ===")
+    print(f"Successfully loaded {len(prepared)} out of {len(TEMPLATES)} templates")
+    for i, t in enumerate(prepared):
+        print(f"  [{i+1}] {t['name']} - {t['size'][0]}x{t['size'][1]} - {t['mask_area']} mask pixels")
+    print("=" * 50)
+    
     return prepared
 
 def fast_best_and_second_best(result, tw, th):
@@ -142,16 +207,33 @@ def fast_best_and_second_best(result, tw, th):
     return min_loc, min_val, min2
 
 def process_single_template(frame, template):
-    """Optimized single template processing"""
+    """Optimized single template processing with debug info"""
     try:
+        # Validate inputs
+        if frame is None or template["tpl"] is None:
+            return {"matched": False, "error": "Invalid input"}
+        
+        if frame.shape[2] != 3 or template["tpl"].shape[2] != 3:
+            return {"matched": False, "error": "Channel mismatch"}
+        
         res = cv2.matchTemplate(frame, template["tpl"], METHOD, mask=template["mask"])
         
         if res.size == 0:
-            return {"matched": False}
+            return {"matched": False, "error": "Empty result"}
             
         top_left, best, second = fast_best_and_second_best(res, *template["size"])
         uniqueness = second - best
         confidence = 1.0 - float(best)
+
+        # Debug info (you can remove this later)
+        debug_info = {
+            "best": best,
+            "second": second,
+            "uniqueness": uniqueness,
+            "confidence": confidence,
+            "thresh": template["sqdiff_thresh"],
+            "uniq_min": template["uniqueness_min"]
+        }
 
         if best <= template["sqdiff_thresh"] and uniqueness >= template["uniqueness_min"]:
             scale = template["scale_factor"]
@@ -169,12 +251,23 @@ def process_single_template(frame, template):
                 "confidence": confidence,
                 "best": best,
                 "uniqueness": uniqueness,
-                "matched": True
+                "matched": True,
+                "debug": debug_info
             }
+        else:
+            # Return debug info for non-matches too (temporarily)
+            return {
+                "matched": False,
+                "name": template["name"],
+                "debug": debug_info
+            }
+            
     except Exception as e:
-        print(f"Error processing template {template['name']}: {e}")
+        print(f"Error processing template {template.get('name', 'unknown')}: {e}")
+        import traceback
+        traceback.print_exc()
     
-    return {"matched": False}
+    return {"matched": False, "error": str(e) if 'e' in locals() else "Unknown error"}
 
 def capture_thread(win):
     """Dedicated thread for screen capture only"""
@@ -241,7 +334,13 @@ def detection_thread(templates):
     global current_matches
     
     print(f"Detection thread started with {len(templates)} templates")
+    if len(templates) == 0:
+        print("WARNING: No templates loaded for detection!")
+        return
+        
     detection_frame_time = 1.0 / DETECTION_FPS_TARGET
+    detection_count = 0
+    last_debug_time = time.time()
     
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         while not stop_threads.is_set():
@@ -268,6 +367,21 @@ def detection_thread(templates):
                 else:
                     matches = [process_single_template(frame, templates[0])]
                 
+                # Debug output every 5 seconds
+                detection_count += 1
+                current_time = time.time()
+                if current_time - last_debug_time >= 5.0:
+                    print(f"\n=== Detection Debug (frame {detection_count}) ===")
+                    for i, match in enumerate(matches):
+                        if "debug" in match:
+                            debug = match["debug"]
+                            status = "MATCH" if match["matched"] else "NO_MATCH"
+                            print(f"  [{i+1}] {match.get('name', 'unknown')} - {status}")
+                            print(f"      best={debug['best']:.4f} (thresh={debug['thresh']:.4f})")
+                            print(f"      uniq={debug['uniqueness']:.4f} (min={debug['uniq_min']:.4f})")
+                            print(f"      conf={debug['confidence']:.4f}")
+                    last_debug_time = current_time
+                
                 # Update shared matches data (thread-safe)
                 with matches_lock:
                     current_matches.clear()
@@ -275,6 +389,8 @@ def detection_thread(templates):
                 
             except Exception as e:
                 print(f"Detection thread error: {e}")
+                import traceback
+                traceback.print_exc()
             
             # Frame rate limiting for detection
             detection_time = time.time() - detection_start
