@@ -431,8 +431,58 @@ def save_screenshot(frame_with_rectangles, matches):
         import traceback
         traceback.print_exc()
 
+def check_in_game_active(matches):
+    """Check if the 'In Game Marker' template is currently matched"""
+    for match in matches:
+        if match.get("name") == "In Game Marker":
+            return True
+    return False
+
+def draw_battleship_grid(frame, original_frame):
+    """Draw a 10x10 grid of circles with colors sampled from the original frame"""
+    # Grid parameters
+    grid_start_x = 1027
+    grid_start_y = 385
+    grid_size = 10
+    dot_diameter = 71
+    dot_radius = dot_diameter // 2
+    
+    # Sample radius - smaller than dot radius to avoid edge artifacts
+    sample_radius = max(5, dot_radius // 3)
+    
+    # Draw 10x10 grid of dots
+    for row in range(grid_size):
+        for col in range(grid_size):
+            # Calculate center position for each dot
+            center_x = grid_start_x + (col * dot_diameter) + dot_radius
+            center_y = grid_start_y + (row * dot_diameter) + dot_radius
+            
+            # Make sure we're within frame bounds
+            if (center_x - sample_radius >= 0 and 
+                center_x + sample_radius < original_frame.shape[1] and
+                center_y - sample_radius >= 0 and 
+                center_y + sample_radius < original_frame.shape[0]):
+                
+                # Sample a small area around the center to get the underlying color
+                sample_area = original_frame[
+                    center_y - sample_radius:center_y + sample_radius,
+                    center_x - sample_radius:center_x + sample_radius
+                ]
+                
+                # Calculate the mean color of the sampled area
+                if sample_area.size > 0:
+                    mean_color = tuple(map(int, np.mean(sample_area.reshape(-1, 3), axis=0)))
+                    
+                    # Draw filled circle with the sampled color
+                    cv2.circle(frame, (center_x, center_y), dot_radius, mean_color, -1)
+                    
+                    # Add a subtle border for better visibility (optional)
+                    # You can comment out this line if you don't want borders
+                    border_color = tuple(255 - c for c in mean_color)  # Inverted color for contrast
+                    cv2.circle(frame, (center_x, center_y), dot_radius, border_color, 2)
+
 def display_thread():
-    """Main display thread for smooth video"""
+    """Main display thread for smooth video - UPDATED with conditional battleship grid"""
     global latest_display_frame, current_matches
     
     print("Display thread started")
@@ -450,16 +500,25 @@ def display_thread():
         try:
             # Get latest display frame (thread-safe)
             display_frame = None
+            original_frame = None
             with display_frame_lock:
                 if latest_display_frame is not None:
-                    display_frame = latest_display_frame.copy()
+                    original_frame = latest_display_frame.copy()  # Keep original for color sampling
+                    display_frame = latest_display_frame.copy()   # Copy for drawing on
             
-            if display_frame is not None:
+            if display_frame is not None and original_frame is not None:
                 # Get current matches (thread-safe)
                 with matches_lock:
                     matches_to_draw = current_matches.copy()
                 
-                # Draw matches
+                # Check if "In Game Marker" is active
+                in_game_active = check_in_game_active(matches_to_draw)
+                
+                # Draw battleship grid ONLY if In Game Marker is detected
+                if in_game_active:
+                    draw_battleship_grid(display_frame, original_frame)
+                
+                # Draw template matches
                 for match in matches_to_draw:
                     tw, th = match["size"]
                     br = (match["top_left"][0] + tw, match["top_left"][1] + th)
@@ -481,10 +540,11 @@ def display_thread():
                         frame_count = 0
                         fps_start = now
                     
-                    # Show queue status and controls
+                    # Show queue status, controls, and grid status
                     queue_size = detection_frame_queue.qsize()
+                    grid_status = "ON" if in_game_active else "OFF"
                     cv2.putText(display_frame, 
-                               f"Display: {display_fps:.1f} FPS | Matches: {len(matches_to_draw)} | Queue: {queue_size}", 
+                               f"Display: {display_fps:.1f} FPS | Matches: {len(matches_to_draw)} | Queue: {queue_size} | Grid: {grid_status}", 
                                (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2, cv2.LINE_AA)
                     
                     # Add screenshot instruction
