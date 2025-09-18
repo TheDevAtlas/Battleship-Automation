@@ -154,6 +154,10 @@ class GridTracker:
         self.history = [[deque(maxlen=self.p.stable_frames) for _ in range(g)] for __ in range(g)]
         self.last_seen_lab = np.zeros((g, g, 3), dtype=np.float32)
         self.last_reason = ""
+        # Cells we have explicitly marked as MISS (to avoid re-trying even if OCR reads UNKNOWN)
+        self.locked_miss = set()
+        # Cells we have actually clicked (attempted moves)
+        self.clicked_cells = set()
         self._precompute_centers()
 
     def _precompute_centers(self):
@@ -257,8 +261,14 @@ class GridTracker:
                 self.history[r][c].append(cls)
                 if len(self.history[r][c]) == self.p.stable_frames and len(set(self.history[r][c])) == 1:
                     committed = self.history[r][c][0]
-                    if not (self.state[r, c] in (SUNK, HIT) and committed == UNKNOWN):
-                        self.state[r, c] = committed
+                    # Only trust readings for cells we've actually clicked (or forced),
+                    # and never downgrade known results back to UNKNOWN.
+                    if (r, c) in self.clicked_cells or (r, c) in self.locked_miss:
+                        if not (
+                            (self.state[r, c] in (SUNK, HIT) and committed == UNKNOWN)
+                            or (((r, c) in self.locked_miss) and committed == UNKNOWN)
+                        ):
+                            self.state[r, c] = committed
 
     def _nbrs4(self, r, c):
         return [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]
@@ -382,6 +392,22 @@ class GridTracker:
 
     def cell_center_px(self, row, col):
         return self.centers[row][col]
+
+    def force_mark_miss(self, row, col):
+        # Mark a cell as MISS and remember it, so we never re-try it even if OCR is unsure
+        g = self.p.grid_size
+        if 0 <= row < g and 0 <= col < g:
+            self.state[row, col] = MISS
+            self.history[row][col].clear()
+            self.history[row][col].extend([MISS] * self.p.stable_frames)
+            self.locked_miss.add((row, col))
+            self.clicked_cells.add((row, col))
+
+    def mark_clicked(self, row, col):
+        # Remember that we actively attempted this cell
+        g = self.p.grid_size
+        if 0 <= row < g and 0 <= col < g:
+            self.clicked_cells.add((row, col))
 
 # Configure grid using measured corner centers (preferred)
 # Top-left cell center: (1086, 237)
@@ -842,7 +868,8 @@ def autoplay_thread():
                 elif st == MISS:
                     print(f"Result: MISS at ({r},{c}) -> opponent's turn")
                 else:
-                    print(f"Result: undecided at ({r},{c}) -> continuing")
+                    print(f"Result: undecided at ({r},{c}) -> assuming MISS and continuing")
+                    grid_tracker.force_mark_miss(r, c)
                 pending_cell = None
                 # Loop will proceed to either click again (if not enemy) or wait
 
@@ -862,6 +889,8 @@ def autoplay_thread():
                 time.sleep(0.05)
                 continue
 
+            # Record this move so only this cell's reading is trusted
+            grid_tracker.mark_clicked(r, c)
             ok = click_cell(r, c)
             if ok:
                 pending_cell = (r, c)
