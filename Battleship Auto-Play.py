@@ -1,5 +1,8 @@
+
 import time
 import cv2
+import os
+import signal
 import numpy as np
 import mss
 import pygetwindow as gw
@@ -16,6 +19,7 @@ from dataclasses import dataclass
 from typing import Optional
 import math
 
+# --- Launch BlueStacks ---
 subprocess.Popen([
     r"C:\Program Files\BlueStacks_nxt\HD-Player.exe",
     "--instance", "Pie64",
@@ -26,6 +30,7 @@ subprocess.Popen([
 
 time.sleep(5)
 
+# === CONFIG ===
 WINDOW_TITLE_HINTS = ["BlueStacks", "Pie64", "HD-Player"]
 ALPHA_CUTOFF = 10
 SHOW_FPS = True
@@ -54,6 +59,13 @@ SCALE_FACTOR = 0.5
 DETECTION_FPS_TARGET = 8
 DISPLAY_FPS_TARGET = 60
 CAPTURE_FPS_TARGET = 45
+
+MIN_MOVES_BEFORE_EXIT = 15
+IN_GAME_LOST_GRACE_SEC = 4.0 
+
+move_count = 0
+last_ingame_seen_ts = 0.0
+shutdown_started = threading.Event()
 
 cached_monitor = None
 cached_window_rect = None
@@ -109,6 +121,11 @@ def lab_dist(a, b):
 
 UNKNOWN, MISS, HIT, SUNK = 0, 1, 2, 3
 STATE_NAME = {UNKNOWN:"UNK", MISS:"MISS", HIT:"HIT", SUNK:"SUNK"}
+
+
+from dataclasses import dataclass
+from typing import Optional
+from collections import deque
 
 @dataclass
 class GridParams:
@@ -482,6 +499,7 @@ class GridTracker:
         if 0 <= row < g and 0 <= col < g:
             self.clicked_cells.add((row, col))
 
+
 grid_tracker = GridTracker(GridParams(
     top_left_cx=1086,
     top_left_cy=427,
@@ -491,6 +509,7 @@ grid_tracker = GridTracker(GridParams(
     sample_size=1,
     stable_frames=2
 ))
+
 
 def find_bluestacks_window(title_hints):
     wins = gw.getAllTitles()
@@ -627,6 +646,7 @@ def process_single_template(frame, template):
         print(f"Error processing template {template.get('name', 'unknown')}: {e}")
     return {"matched": False, "error": "Unknown error"}
 
+
 def capture_thread(win):
     global latest_display_frame, cached_monitor, cached_window_rect, last_rect_check
     capture_frame_time = 1.0 / CAPTURE_FPS_TARGET
@@ -706,7 +726,7 @@ def save_screenshot(frame_with_rectangles, matches):
     try:
         import os
         from datetime import datetime
-        screenshot_dir = "screenshots"
+        screenshot_dir = "Screenshots"
         if not os.path.exists(screenshot_dir):
             os.makedirs(screenshot_dir)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -800,6 +820,11 @@ def display_thread():
                 with matches_lock:
                     matches_to_draw = current_matches.copy()
                 in_game_active = check_in_game_active(matches_to_draw)
+
+                # Track last time the in-game marker was visible
+                if in_game_active:
+                    global last_ingame_seen_ts
+                    last_ingame_seen_ts = time.time()
 
                 _update_click_state(matches_to_draw)
 
@@ -939,11 +964,59 @@ def autoplay_thread():
             if ok:
                 pending_cell = (r, c)
                 wait_until = time.time() + WAIT_AFTER_CLICK_SEC
+                # Count this as a move (a fired shot)
+                global move_count
+                move_count += 1
+                print(f"[Moves] Fired shot #{move_count} at ({r},{c})")
             else:
                 time.sleep(0.2)
         except Exception as e:
             print(f"Autoplay error: {e}")
             time.sleep(0.2)
+
+def kill_bluestacks():
+    """Force-kill common BlueStacks processes."""
+    try:
+        # Most reliable: taskkill (Windows)
+        os.system('taskkill /F /IM HD-Player.exe >NUL 2>&1')
+        os.system('taskkill /F /IM HD-Frontend.exe >NUL 2>&1')
+        os.system('taskkill /F /IM Bluestacks.exe >NUL 2>&1')
+        os.system('taskkill /F /IM BluestacksAppPlayer.exe >NUL 2>&1')
+        print("[Exit] BlueStacks processes terminated.")
+    except Exception as e:
+        print(f"[Exit] Error killing BlueStacks: {e}")
+
+def graceful_shutdown(reason=""):
+    """Flip stop flag, close windows, and kill BlueStacks once."""
+    if shutdown_started.is_set():
+        return
+    shutdown_started.set()
+    print(f"\n[Exit] {reason}")
+    stop_threads.set()
+    # Let display thread close its window in main's finally.
+    try:
+        kill_bluestacks()
+    except Exception as e:
+        print(f"[Exit] kill_bluestacks exception: {e}")
+
+def watchdog_thread():
+    """Exit when: enough moves AND 'In Game Marker' has been gone for a while."""
+    global last_ingame_seen_ts, move_count
+    print("Watchdog thread started")
+    while not stop_threads.is_set():
+        try:
+            now = time.time()
+            # Only consider exit after we’ve fired enough shots
+            if move_count >= MIN_MOVES_BEFORE_EXIT:
+                # If we haven't seen the in-game marker in a while, shut down
+                if last_ingame_seen_ts > 0 and (now - last_ingame_seen_ts) >= IN_GAME_LOST_GRACE_SEC:
+                    graceful_shutdown(
+                        f"In-game marker absent for {IN_GAME_LOST_GRACE_SEC:.1f}s after {move_count} moves."
+                    )
+                    break
+        except Exception as e:
+            print(f"Watchdog error: {e}")
+        time.sleep(0.2)
 
 def main():
     global cached_monitor, cached_window_rect, _target_hwnd
@@ -970,6 +1043,8 @@ def main():
     capture_worker.start()
     detection_worker.start()
     autoplay_worker.start()
+    watchdog_worker = threading.Thread(target=watchdog_thread, daemon=True)
+    watchdog_worker.start()
 
     try:
         display_thread()
