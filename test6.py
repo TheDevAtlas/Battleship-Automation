@@ -70,11 +70,11 @@ detection_frame_queue = Queue(maxsize=1)
 stop_threads = threading.Event()
 
 AUTO_PLAY_ENABLED = True
-WAIT_AFTER_CLICK_SEC = 2.0
+WAIT_AFTER_CLICK_SEC = 2.15
 
 CLICK_TARGETS = ["Start Game Main Menu", "Start Game Ready Up"]
 CLICK_HOLD_SEC = 0.075
-VISIBLE_DURATION_SEC = 2.0
+VISIBLE_DURATION_SEC = 2.15
 _clicked_flags = {name: False for name in CLICK_TARGETS}
 _visible_since = {name: None for name in CLICK_TARGETS}
 _target_hwnd = None
@@ -139,6 +139,8 @@ class GridTracker:
         self.locked_miss = set()
         self.clicked_cells = set()
         self._precompute_centers()
+        # Ship shapes for placement-based targeting
+        self.ship_shapes = self._init_ship_shapes()
 
     def _precompute_centers(self):
         self.centers = []
@@ -275,6 +277,9 @@ class GridTracker:
         return (best[1], best[2], why)
 
     def suggest_next(self):
+        # 1) If there are hits, use shape-aware probability around each cluster.
+        # 2) Otherwise, compute a board-wide probability heatmap with all shapes.
+        g = self.p.grid_size
         unknown_cells = list(zip(*np.where(self.state == UNKNOWN)))
         if not unknown_cells:
             self.last_reason = "No UNKNOWN cells; board seems complete."
@@ -282,34 +287,22 @@ class GridTracker:
 
         hits = list(zip(*np.where(self.state == HIT)))
         if hits:
+            heat = np.zeros((g, g), dtype=np.float32)
             clusters = self._clusters(hits)
             clusters.sort(key=len, reverse=True)
+            any_valid = False
             for cluster in clusters:
-                rows = sorted(set([r for r,_ in cluster]))
-                cols = sorted(set([c for _,c in cluster]))
-                if len(rows) == 1:
-                    r = rows[0]
-                    minc = min(c for _,c in cluster)
-                    maxc = max(c for _,c in cluster)
-                    candidates = []
-                    if self._is_unknown(r, minc-1): candidates.append((r, minc-1, "extend left"))
-                    if self._is_unknown(r, maxc+1): candidates.append((r, maxc+1, "extend right"))
-                    if candidates:
-                        rc, cc, why = self._best_target(candidates)
-                        self.last_reason = f"Extending horizontal hit at row {r}: {why}"
-                        return (rc, cc, 100, self.last_reason)
-                elif len(cols) == 1:
-                    c = cols[0]
-                    minr = min(r for r,_ in cluster)
-                    maxr = max(r for r,_ in cluster)
-                    candidates = []
-                    if self._is_unknown(minr-1, c): candidates.append((minr-1, c, "extend up"))
-                    if self._is_unknown(maxr+1, c): candidates.append((maxr+1, c, "extend down"))
-                    if candidates:
-                        rc, cc, why = self._best_target(candidates)
-                        self.last_reason = f"Extending vertical hit at col {c}: {why}"
-                        return (rc, cc, 100, self.last_reason)
-                for (r,c) in cluster:
+                local = self._heatmap_for_cluster(cluster)
+                if local is not None:
+                    heat += local
+                    any_valid = True
+            if any_valid:
+                r, c, score = self._pick_max_unknown(heat)
+                self.last_reason = "Target mode: shape placements covering hit clusters."
+                return (r, c, float(score), self.last_reason)
+            # Fallback to probing neighbors if shape-fitting fails for current evidence
+            for cluster in clusters:
+                for (r, c) in cluster:
                     neighbors = [(r-1,c,"up"),(r+1,c,"down"),(r,c-1,"left"),(r,c+1,"right")]
                     cand = [(rr,cc,lab) for (rr,cc,lab) in neighbors if self._is_unknown(rr,cc)]
                     if cand:
@@ -317,17 +310,135 @@ class GridTracker:
                         self.last_reason = f"Probing around hit at ({r},{c}): {why}"
                         return (rc, cc, 90, self.last_reason)
 
-        best = (-1e9, None, None)
-        for (r,c) in unknown_cells:
-            parity = 1 if (r + c) % 2 == 0 else 0
-            unk_n = sum(self._is_unknown(rr,cc) for rr,cc in self._nbrs4(r,c))
-            miss_close = sum(self._is_miss(rr,cc) for rr,cc in self._nbrs4(r,c))
-            score = parity*2 + unk_n*1.5 - miss_close*0.5
-            if score > best[0]:
-                best = (score, r, c)
-        _, br, bc = best
-        self.last_reason = "Hunt mode: parity + local unknown-neighbor density."
-        return (br, bc, float(best[0]), self.last_reason)
+        # Hunt heatmap: count all valid placements of all shapes on UNKNOWN/HIT cells
+        heat = self._heatmap_global()
+        r, c, score = self._pick_max_unknown(heat)
+        self.last_reason = "Hunt mode: global shape-placement heatmap."
+        return (r, c, float(score), self.last_reason)
+
+    # -------------------- Shape logic --------------------
+    def _init_ship_shapes(self):
+        def line(n):
+            return {(0, d) for d in range(n)}
+        shapes = {
+            "L2": line(2),
+            "L3": line(3),
+            "L4": line(4),
+            "L5": line(5),
+            "T4": {(0,0),(0,1),(0,2),(1,1)},
+            "S6": {(1,0),(2,0),(3,0),(0,1),(1,1),(2,1)}
+        }
+        oriented = {}
+        for name, cells in shapes.items():
+            oriented[name] = self._all_orientations(cells)
+        return oriented
+
+    def _normalize(self, cells):
+        minr = min(r for r, _ in cells)
+        minc = min(c for _, c in cells)
+        norm = sorted([(r-minr, c-minc) for r, c in cells])
+        return tuple(norm)
+
+    def _rot90(self, cells):
+        return {(c, -r) for (r, c) in cells}
+
+    def _mirror(self, cells):
+        return {(r, -c) for (r, c) in cells}
+
+    def _all_orientations(self, base):
+        variants = set()
+        work = [set(base)]
+        for _ in range(3):
+            work.append(self._rot90(work[-1]))
+        all_sets = work + [self._mirror(s) for s in work]
+        for s in all_sets:
+            variants.add(self._normalize(s))
+        return [list(v) for v in variants]
+
+    def _cells_free(self, placement):
+        g = self.p.grid_size
+        for (r, c) in placement:
+            if not (0 <= r < g and 0 <= c < g):
+                return False
+            st = self.state[r, c]
+            if st == MISS or st == SUNK:
+                return False
+        return True
+
+    def _covers_cluster(self, placement_set, cluster_set):
+        return cluster_set.issubset(placement_set)
+
+    def _placements_covering_cluster(self, cluster):
+        g = self.p.grid_size
+        cluster_set = set(cluster)
+        results = []
+        for name, variants in self.ship_shapes.items():
+            for variant in variants:
+                maxr = max(r for r, _ in variant)
+                maxc = max(c for _, c in variant)
+                for base_r in range(g - maxr):
+                    for base_c in range(g - maxc):
+                        placement = [(base_r + r, base_c + c) for (r, c) in variant]
+                        if not self._cells_free(placement):
+                            continue
+                        if not self._covers_cluster(set(placement), cluster_set):
+                            continue
+                        results.append(placement)
+        return results
+
+    def _heatmap_for_cluster(self, cluster):
+        placements = self._placements_covering_cluster(cluster)
+        if not placements:
+            return None
+        g = self.p.grid_size
+        heat = np.zeros((g, g), dtype=np.float32)
+        for placement in placements:
+            for (r, c) in placement:
+                if self.state[r, c] == UNKNOWN:
+                    heat[r, c] += 1.0
+        return heat
+
+    def _global_valid_placements(self):
+        g = self.p.grid_size
+        results = []
+        for name, variants in self.ship_shapes.items():
+            for variant in variants:
+                maxr = max(r for r, _ in variant)
+                maxc = max(c for _, c in variant)
+                for base_r in range(g - maxr):
+                    for base_c in range(g - maxc):
+                        placement = [(base_r + r, base_c + c) for (r, c) in variant]
+                        if not self._cells_free(placement):
+                            continue
+                        hits_present = np.any(self.state == HIT)
+                        if hits_present:
+                            if not any(self.state[r, c] == HIT for (r, c) in placement):
+                                continue
+                        results.append(placement)
+        return results
+
+    def _heatmap_global(self):
+        g = self.p.grid_size
+        heat = np.zeros((g, g), dtype=np.float32)
+        placements = self._global_valid_placements()
+        if not placements:
+            return heat
+        for placement in placements:
+            for (r, c) in placement:
+                if self.state[r, c] == UNKNOWN:
+                    heat[r, c] += 1.0
+        return heat
+
+    def _pick_max_unknown(self, heat):
+        best = (-1.0, None, None)
+        g = self.p.grid_size
+        for r in range(g):
+            for c in range(g):
+                if self.state[r, c] == UNKNOWN:
+                    v = float(heat[r, c])
+                    if v > best[0]:
+                        best = (v, r, c)
+        return best[1], best[2], best[0]
 
     def render_overlay(self, frame):
         overlay = frame.copy()
