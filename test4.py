@@ -9,6 +9,8 @@ import numpy as np
 import mss
 import pygetwindow as gw
 import win32gui
+import win32api
+import win32con
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import cpu_count
@@ -16,6 +18,7 @@ import threading
 from queue import Queue
 from collections import deque
 from dataclasses import dataclass
+from typing import Optional
 import math
 
 # --- Launch BlueStacks (unchanged) ---
@@ -50,15 +53,6 @@ TEMPLATES = [
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":GREEN},
     {"name":"Enemy Turn", "path":r"ScreenElements\Enemy Turn.png",
      "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":ORANGE},
-
-     {"name":"Enemy Turn", "path":r"ScreenElements\1.png",
-     "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":ORANGE},
-     {"name":"Enemy Turn", "path":r"ScreenElements\2.png",
-     "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":ORANGE},
-     {"name":"Enemy Turn", "path":r"ScreenElements\A.png",
-     "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":ORANGE},
-     {"name":"Enemy Turn", "path":r"ScreenElements\B.png",
-     "sqdiff_thresh":0.05, "uniqueness_min":0.01, "color":ORANGE},
 ]
 
 MIN_MASK_AREA = 500
@@ -83,6 +77,18 @@ matches_lock = threading.Lock()
 
 detection_frame_queue = Queue(maxsize=1)  # Only latest frame for detection
 stop_threads = threading.Event()
+
+# Auto-play configuration
+AUTO_PLAY_ENABLED = True
+WAIT_AFTER_CLICK_SEC = 2.0
+
+# One-time click logic for two templates
+CLICK_TARGETS = ["Start Game Main Menu", "Start Game Ready Up"]
+CLICK_HOLD_SEC = 0.05
+VISIBLE_DURATION_SEC = 1.5
+_clicked_flags = {name: False for name in CLICK_TARGETS}
+_visible_since = {name: None for name in CLICK_TARGETS}
+_target_hwnd = None
 
 # ===================== GRID TRACKER (Board State + Next Move) =====================
 
@@ -119,11 +125,25 @@ STATE_NAME = {UNKNOWN:"UNK", MISS:"MISS", HIT:"HIT", SUNK:"SUNK"}
 
 @dataclass
 class GridParams:
+    # Legacy square-grid params (kept for backward compatibility)
     start_x: int = 1027+16
     start_y: int = 385+16
     dot_diameter: int = 71
+    # New corner-center based params (preferred):
+    top_left_cx: Optional[int] = None
+    top_left_cy: Optional[int] = None
+    bottom_right_cx: Optional[int] = None
+    bottom_right_cy: Optional[int] = None
+    # Optional extra anchors to model skewed grids (recommended)
+    top_right_cx: Optional[int] = None
+    top_right_cy: Optional[int] = None
+    bottom_left_cx: Optional[int] = None
+    bottom_left_cy: Optional[int] = None
+
     grid_size: int = 10
-    sample_radius: int = 8   # px around center to average
+    # Use fixed square sampling for stability (e.g., 10x10)
+    sample_size: int = 10     # side length of square (px)
+    sample_radius: int = 8    # legacy: kept for backward-compat
     stable_frames: int = 3   # debounce window
 
 class GridTracker:
@@ -138,21 +158,71 @@ class GridTracker:
 
     def _precompute_centers(self):
         self.centers = []
-        r = self.p.dot_diameter // 2
-        for row in range(self.p.grid_size):
-            row_centers = []
-            for col in range(self.p.grid_size):
-                cx = self.p.start_x + (col * self.p.dot_diameter) + r
-                cy = self.p.start_y + (row * self.p.dot_diameter) + r
-                row_centers.append((cx, cy))
-            self.centers.append(row_centers)
+        g = self.p.grid_size
+        # Compute basis vectors from anchors if available
+        if (self.p.top_left_cx is not None and self.p.top_left_cy is not None):
+            tlx = float(self.p.top_left_cx); tly = float(self.p.top_left_cy)
+            steps = max(1, g - 1)
+            ex_x = ey_x = ex_y = ey_y = None
+            # Horizontal basis from TL->TR if provided
+            if (self.p.top_right_cx is not None and self.p.top_right_cy is not None):
+                ex_x = (float(self.p.top_right_cx) - tlx) / steps
+                ex_y = (float(self.p.top_right_cy) - tly) / steps
+            # Vertical basis from TL->BL if provided
+            if (self.p.bottom_left_cx is not None and self.p.bottom_left_cy is not None):
+                ey_x = (float(self.p.bottom_left_cx) - tlx) / steps
+                ey_y = (float(self.p.bottom_left_cy) - tly) / steps
+            # If only BR is provided, assume axis-aligned (no shear)
+            if (ex_x is None or ex_y is None) or (ey_x is None or ey_y is None):
+                if (self.p.bottom_right_cx is not None and self.p.bottom_right_cy is not None):
+                    brx = float(self.p.bottom_right_cx); bry = float(self.p.bottom_right_cy)
+                    # Assume rows change only Y and cols only X
+                    if ex_x is None or ex_y is None:
+                        ex_x = (brx - tlx) / steps
+                        ex_y = 0.0
+                    if ey_x is None or ey_y is None:
+                        ey_x = 0.0
+                        ey_y = (bry - tly) / steps
+                else:
+                    # Fallback to legacy spacing
+                    ex_x = float(self.p.dot_diameter); ex_y = 0.0
+                    ey_x = 0.0; ey_y = float(self.p.dot_diameter)
+            # Save effective spacings for overlay sizing
+            self._dx = math.hypot(ex_x, ex_y)
+            self._dy = math.hypot(ey_x, ey_y)
+            for row in range(g):
+                row_centers = []
+                for col in range(g):
+                    cx = int(round(tlx + col * ex_x + row * ey_x))
+                    cy = int(round(tly + col * ex_y + row * ey_y))
+                    row_centers.append((cx, cy))
+                self.centers.append(row_centers)
+        else:
+            # Legacy square grid behavior using a single dot_diameter
+            r = self.p.dot_diameter // 2
+            self._dx = float(self.p.dot_diameter)
+            self._dy = float(self.p.dot_diameter)
+            for row in range(g):
+                row_centers = []
+                for col in range(g):
+                    cx = self.p.start_x + (col * self.p.dot_diameter) + r
+                    cy = self.p.start_y + (row * self.p.dot_diameter) + r
+                    row_centers.append((cx, cy))
+                self.centers.append(row_centers)
 
     def _sample_lab(self, frame, row, col):
         h, w = frame.shape[:2]
         cx, cy = self.centers[row][col]
-        sr = self.p.sample_radius
-        x1 = max(0, cx - sr); x2 = min(w, cx + sr)
-        y1 = max(0, cy - sr); y2 = min(h, cy + sr)
+        # Fixed square sampling window for robustness
+        if self.p.sample_size and self.p.sample_size > 0:
+            half = self.p.sample_size // 2
+            x1 = max(0, cx - half); x2 = min(w, x1 + self.p.sample_size)
+            y1 = max(0, cy - half); y2 = min(h, y1 + self.p.sample_size)
+        else:
+            # Legacy radius fallback
+            sr = self.p.sample_radius
+            x1 = max(0, cx - sr); x2 = min(w, cx + sr)
+            y1 = max(0, cy - sr); y2 = min(h, cy + sr)
         patch = frame[y1:y2, x1:x2]
         if patch.size == 0:
             return None
@@ -286,7 +356,10 @@ class GridTracker:
 
     def render_overlay(self, frame):
         overlay = frame.copy()
-        r = max(6, self.p.dot_diameter//2 - 16)
+        # Estimate a reasonable radius from spacing (fallback to dot_diameter)
+        spacing_x = getattr(self, "_dx", float(self.p.dot_diameter))
+        spacing_y = getattr(self, "_dy", float(self.p.dot_diameter))
+        r = max(6, int(min(spacing_x, spacing_y) // 2) - 16)
         for row in range(self.p.grid_size):
             for col in range(self.p.grid_size):
                 cx, cy = self.centers[row][col]
@@ -310,13 +383,22 @@ class GridTracker:
     def cell_center_px(self, row, col):
         return self.centers[row][col]
 
+# Configure grid using measured corner centers (preferred)
+# Top-left cell center: (1086, 237)
+# Bottom-right cell center: (1752, 1092)
 grid_tracker = GridTracker(GridParams(
-    start_x=1027+16,
-    start_y=385+16,
-    dot_diameter=71,
+    # Anchors measured from the screenshot
+    top_left_cx=1086,
+    top_left_cy=427,
+    bottom_right_cx=1752,
+    bottom_right_cy=1092,
+    # If you can provide top-right or bottom-left,
+    # add them here to correct any skew:
+    # top_right_cx=..., top_right_cy=...,
+    # bottom_left_cx=..., bottom_left_cy=...,
     grid_size=10,
-    sample_radius=8,
-    stable_frames=3
+    sample_size=1,   # average 10x10 pixels around center
+    stable_frames=4
 ))
 
 # ===================== Window / Template Utilities =====================
@@ -562,6 +644,56 @@ def check_in_game_active(matches):
             return True
     return False
 
+def check_enemy_turn(matches):
+    for match in matches:
+        if match.get("name") == "Enemy Turn":
+            return True
+    return False
+
+def _click_center_of_match(match):
+    global cached_monitor, _target_hwnd
+    try:
+        if cached_monitor is None:
+            return
+        tlx, tly = match["top_left"]
+        tw, th = match["size"]
+        cx = cached_monitor["left"] + int(tlx + tw/2)
+        cy = cached_monitor["top"] + int(tly + th/2)
+        if _target_hwnd:
+            try:
+                win32gui.SetForegroundWindow(_target_hwnd)
+            except Exception:
+                pass
+        win32api.SetCursorPos((cx, cy))
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(CLICK_HOLD_SEC)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        print(f"Clicked '{match['name']}' at screen ({cx},{cy})")
+    except Exception as e:
+        print(f"Click error for {match.get('name','?')}: {e}")
+
+def _update_click_state(matches):
+    now = time.time()
+    present = {name: None for name in CLICK_TARGETS}
+    for m in matches:
+        n = m.get("name")
+        if n in present:
+            present[n] = m
+    for name in CLICK_TARGETS:
+        if _clicked_flags[name]:
+            continue
+        m = present[name]
+        if m is not None:
+            if _visible_since[name] is None:
+                _visible_since[name] = now
+            else:
+                if now - _visible_since[name] >= VISIBLE_DURATION_SEC:
+                    _click_center_of_match(m)
+                    _clicked_flags[name] = True
+                    _visible_since[name] = None
+        else:
+            _visible_since[name] = None
+
 # ===================== Display (Integrates Grid Tracker) =====================
 
 def display_thread():
@@ -585,6 +717,9 @@ def display_thread():
                 with matches_lock:
                     matches_to_draw = current_matches.copy()
                 in_game_active = check_in_game_active(matches_to_draw)
+
+                # One-time click updates for start screens
+                _update_click_state(matches_to_draw)
 
                 # Update and draw board overlay only when in game
                 if in_game_active:
@@ -617,7 +752,7 @@ def display_thread():
                                "SPACE: screenshot   N: print next move   ESC/Q: quit",
                                (10, display_frame.shape[0] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
 
-                cv2.imshow("BlueStacks Live - Fully Threaded", display_frame)
+                cv2.imshow("BlueStacks Live - Fully Threaded (Auto-Click)", display_frame)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == 27 or key == ord('q'):
@@ -640,10 +775,107 @@ def display_thread():
         if display_time < display_frame_time:
             time.sleep(display_frame_time - display_time)
 
+# ===================== Auto-Play (Click Suggested Moves) =====================
+
+def _click_screen_point(cx, cy, label="cell"):
+    global _target_hwnd
+    try:
+        if _target_hwnd:
+            try:
+                win32gui.SetForegroundWindow(_target_hwnd)
+            except Exception:
+                pass
+        win32api.SetCursorPos((int(cx), int(cy)))
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        time.sleep(CLICK_HOLD_SEC)
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        print(f"Clicked {label} at screen ({int(cx)},{int(cy)})")
+        return True
+    except Exception as e:
+        print(f"Click error at ({cx},{cy}): {e}")
+        return False
+
+def click_cell(row, col):
+    global cached_monitor
+    if cached_monitor is None:
+        return False
+    try:
+        cx, cy = grid_tracker.cell_center_px(row, col)
+        sx = cached_monitor["left"] + int(cx)
+        sy = cached_monitor["top"] + int(cy)
+        return _click_screen_point(sx, sy, label=f"cell ({row},{col})")
+    except Exception as e:
+        print(f"click_cell error for ({row},{col}): {e}")
+        return False
+
+def autoplay_thread():
+    if not AUTO_PLAY_ENABLED:
+        return
+    print("Autoplay thread started")
+    pending_cell = None  # (r,c)
+    wait_until = 0.0
+    while not stop_threads.is_set():
+        try:
+            # Copy current matches
+            with matches_lock:
+                matches = current_matches.copy()
+
+            in_game = check_in_game_active(matches)
+            enemy_turn = check_enemy_turn(matches)
+
+            if not in_game:
+                pending_cell = None
+                time.sleep(0.1)
+                continue
+
+            now = time.time()
+            # If waiting for result, hold until timeout then assess
+            if pending_cell is not None:
+                if now < wait_until:
+                    time.sleep(0.05)
+                    continue
+                r, c = pending_cell
+                st = grid_tracker.state[r, c]
+                if st in (HIT, SUNK):
+                    print(f"Result: HIT at ({r},{c}) -> taking another shot")
+                    # immediately ready for next shot (still our turn)
+                elif st == MISS:
+                    print(f"Result: MISS at ({r},{c}) -> opponent's turn")
+                else:
+                    print(f"Result: undecided at ({r},{c}) -> continuing")
+                pending_cell = None
+                # Loop will proceed to either click again (if not enemy) or wait
+
+            # Only click when it's our turn
+            if enemy_turn:
+                time.sleep(0.15)
+                continue
+
+            # Ask for next suggestion
+            sug = grid_tracker.suggest_next()
+            if not sug:
+                time.sleep(0.25)
+                continue
+            r, c, score, reason = sug
+            # Safety: only click UNKNOWN targets
+            if grid_tracker.state[r, c] != UNKNOWN:
+                time.sleep(0.05)
+                continue
+
+            ok = click_cell(r, c)
+            if ok:
+                pending_cell = (r, c)
+                wait_until = time.time() + WAIT_AFTER_CLICK_SEC
+            else:
+                time.sleep(0.2)
+        except Exception as e:
+            print(f"Autoplay error: {e}")
+            time.sleep(0.2)
+
 # ===================== Main =====================
 
 def main():
-    global cached_monitor, cached_window_rect
+    global cached_monitor, cached_window_rect, _target_hwnd
     templates = prepare_templates(SCALE_FACTOR)
     templates = [t for t in templates if t["mask_area"] >= MIN_MASK_AREA]
     print(f"Processing {len(templates)} templates at {SCALE_FACTOR}x scale")
@@ -653,6 +885,8 @@ def main():
     if not win:
         raise RuntimeError("Could not find a BlueStacks window. Adjust WINDOW_TITLE_HINTS.")
 
+    _target_hwnd = win._hWnd
+
     cached_window_rect = get_client_rect(win)
     left, top, right, bottom = cached_window_rect
     w = max(1, right - left)
@@ -661,8 +895,10 @@ def main():
 
     capture_worker = threading.Thread(target=capture_thread, args=(win,), daemon=True)
     detection_worker = threading.Thread(target=detection_thread, args=(templates,), daemon=True)
+    autoplay_worker = threading.Thread(target=autoplay_thread, daemon=True)
     capture_worker.start()
     detection_worker.start()
+    autoplay_worker.start()
 
     try:
         display_thread()
