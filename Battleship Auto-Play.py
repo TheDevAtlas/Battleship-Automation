@@ -192,6 +192,7 @@ class GridTracker:
         self.history = [[deque(maxlen=self.p.stable_frames) for _ in range(g)] for __ in range(g)]
         self.last_seen_lab = np.zeros((g, g, 3), dtype=np.float32)
         self.last_reason = ""
+        self.last_used_elimination = False
         self.locked_miss = set()
         self.clicked_cells = set()
         # Game ship set: lines [5,4,3,2] + T4 + S6 (sizes: 6,5,4,4,3,2)
@@ -506,11 +507,17 @@ class GridTracker:
         if hits:
             heat_t = self._heatmap_target_mode()
             if heat_t is not None and np.any(heat_t > 0):
+                elim_scores, _ = self._compute_elimination_scores(restrict_to_hits=True)
                 self.last_heat = heat_t
                 self.last_heat_max = float(np.max(heat_t))
-                r, c, score = self._pick_max_unknown(heat_t)
-                self.last_reason = "Target mode: line placements covering hit cluster(s)."
-                return (r, c, float(score), self.last_reason)
+                heat_norm = heat_t / max(1e-6, self.last_heat_max)
+                w_prob, w_elim = 0.7, 0.3
+                blended = (w_prob * heat_norm) + (w_elim * elim_scores)
+                r_b, c_b, score_b = self._pick_max_unknown(blended)
+                r_h, c_h, _ = self._pick_max_unknown(heat_t)
+                self.last_used_elimination = (r_b != r_h or c_b != c_h)
+                self.last_reason = "Target mode: blended heat + elimination" + (" [Elimination-driven]" if self.last_used_elimination else "")
+                return (r_b, c_b, float(score_b), self.last_reason)
             # Fallback probe around hits when no valid line placement found
             clusters = self._clusters(hits)
             clusters.sort(key=len, reverse=True)
@@ -520,6 +527,7 @@ class GridTracker:
                     cand = [(rr,cc,lab) for (rr,cc,lab) in neighbors if self._is_unknown(rr,cc)]
                     if cand:
                         rc, cc, why = self._best_target(cand)
+                        self.last_used_elimination = False
                         self.last_reason = f"Probe around hit at ({r},{c}): {why}"
                         self.last_heat = None
                         self.last_heat_max = 0.0
@@ -529,9 +537,15 @@ class GridTracker:
         heat, _ = self.compute_probability_heatmap()
         self.last_heat = heat
         self.last_heat_max = float(np.max(heat)) if heat is not None else 0.0
-        r, c, score = self._pick_max_unknown(heat)
-        self.last_reason = "Hunt mode: summed valid placements for all shapes."
-        return (r, c, float(score), self.last_reason)
+        elim_scores, _ = self._compute_elimination_scores(restrict_to_hits=False)
+        heat_norm = heat / max(1e-6, self.last_heat_max)
+        w_prob, w_elim = 0.6, 0.4
+        blended = (w_prob * heat_norm) + (w_elim * elim_scores)
+        r_b, c_b, score_b = self._pick_max_unknown(blended)
+        r_h, c_h, _ = self._pick_max_unknown(heat)
+        self.last_used_elimination = (r_b != r_h or c_b != c_h)
+        self.last_reason = "Hunt mode: blended heat + elimination" + (" [Elimination-driven]" if self.last_used_elimination else "")
+        return (r_b, c_b, float(score_b), self.last_reason)
 
     # -------------------- Line-ship probability heatmap --------------------
     def _sunk_clusters(self):
@@ -698,6 +712,72 @@ class GridTracker:
                 combined += local
                 any_valid = True
         return combined if any_valid else None
+
+    # -------------------- Elimination / information-gain scoring --------------------
+    def _compute_elimination_scores(self, restrict_to_hits: bool = True):
+        g = self.p.grid_size
+        ships = self._ships_remaining_types()
+        hits = list(zip(*np.where(self.state == HIT)))
+        clusters = []
+        if restrict_to_hits and hits:
+            clusters = self._clusters(hits)
+            clusters.sort(key=len, reverse=True)
+
+        cover_counts = np.zeros((g, g), dtype=np.int32)
+        total_placements = 0
+
+        def consider_placement(placement):
+            nonlocal total_placements
+            total_placements += 1
+            for (r, c) in placement:
+                if self.state[r, c] == UNKNOWN:
+                    cover_counts[r, c] += 1
+
+        if clusters:
+            for ent in ships:
+                for variant in ent["variants"]:
+                    maxr = max(r for r, _ in variant)
+                    maxc = max(c for _, c in variant)
+                    for base_r in range(g - maxr):
+                        for base_c in range(g - maxc):
+                            placement = [(base_r + r, base_c + c) for (r, c) in variant]
+                            if not self._placement_valid(placement):
+                                continue
+                            ps = set(placement)
+                            ok = False
+                            for cluster in clusters:
+                                if set(cluster).issubset(ps):
+                                    ok = True
+                                    break
+                            if not ok:
+                                continue
+                            consider_placement(placement)
+        else:
+            for ent in ships:
+                for variant in ent["variants"]:
+                    maxr = max(r for r, _ in variant)
+                    maxc = max(c for _, c in variant)
+                    for base_r in range(g - maxr):
+                        for base_c in range(g - maxc):
+                            placement = [(base_r + r, base_c + c) for (r, c) in variant]
+                            if not self._placement_valid(placement):
+                                continue
+                            consider_placement(placement)
+
+        elim = np.zeros((g, g), dtype=np.float32)
+        if total_placements <= 0:
+            return elim, 0
+        T = float(total_placements)
+        for r in range(g):
+            for c in range(g):
+                if self.state[r, c] != UNKNOWN:
+                    continue
+                K = float(cover_counts[r, c])
+                if K <= 0.0:
+                    continue
+                p = K / T
+                elim[r, c] = float(2.0 * p * (1.0 - p))
+        return elim, total_placements
 
     # -------------------- Shape logic --------------------
     def _init_ship_shapes(self):
@@ -1453,6 +1533,11 @@ def autoplay_thread():
                 global move_count
                 move_count += 1
                 print(f"[Moves] Fired shot #{move_count} at ({r},{c})")
+                try:
+                    if grid_tracker.last_used_elimination:
+                        print("[Strategy] Elimination-driven shot to speed up locating ships")
+                except Exception:
+                    pass
             else:
                 time.sleep(0.2)
         except Exception as e:
