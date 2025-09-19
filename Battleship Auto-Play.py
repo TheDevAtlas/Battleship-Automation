@@ -70,7 +70,8 @@ CAPTURE_FPS_TARGET = 45
 
 MIN_MOVES_BEFORE_EXIT = 15
 IN_GAME_LOST_GRACE_SEC = 4.0 
-FIRST_INGAME_EXTRA_WAIT_SEC = 5.0
+FIRST_INGAME_EXTRA_WAIT_SEC = 4.0
+ENEMY_TURN_CLEAR_WAIT_SEC = 1.2  # Require 4s of no 'Enemy Turn' before first move
 
 move_count = 0
 last_ingame_seen_ts = 0.0
@@ -92,15 +93,17 @@ detection_frame_queue = Queue(maxsize=1)
 stop_threads = threading.Event()
 
 AUTO_PLAY_ENABLED = True
-WAIT_AFTER_CLICK_SEC = 2.5
+WAIT_AFTER_CLICK_SEC = 2
 
 CLICK_TARGETS = ["Start Game Main Menu", "Start Game Ready Up", "Exit Rewards"]
 CLICK_HOLD_SEC = 0.075
-VISIBLE_DURATION_SEC = 2.5
+VISIBLE_DURATION_SEC = 2
 _clicked_flags = {name: False for name in CLICK_TARGETS}
 _visible_since = {name: None for name in CLICK_TARGETS}
 _target_hwnd = None
 _game_armed = False
+last_enemy_turn_seen_ts = 0.0
+_our_turn_ready = False  # Set True after enemy turn has been absent for ENEMY_TURN_CLEAR_WAIT_SEC
 
 SHIP_NAMES = ["S6", "L5", "L4", "T4", "L3", "L2"]
 
@@ -120,6 +123,7 @@ REMAINING_SHIP_ICON_COORDS = {
 REMAINING_SHIP_SAMPLE_SIZE = 5
 
 USE_ICON_COLOR_FOR_REMAINING = False
+USE_ICON_COLOR_FOR_SUNK_ALERT = True  # Use ship icon coords to announce/draw sunk events
 
 SHIP_ICON_ALIVE_COLOR_HEX = "EF7508"
 
@@ -149,6 +153,7 @@ THRESH = {
     "MISS": 16.0,
     "BG":   18.0,
 }
+SUNK_MARKER_DURATION_SEC = 3.0
 
 def lab_dist(a, b):
     return float(np.linalg.norm(a - b))
@@ -204,6 +209,19 @@ class GridTracker:
         except Exception:
             # Fallback: some orange-ish default if hex invalid
             self._icon_alive_lab = bgr_to_lab((0, 165, 255))
+        # Sunk announcement tracking
+        self._announced_sunk = set()  # set[frozenset[(r,c)]]
+        self._sunk_markers = []       # list[{pos:(x,y), until:ts, size:int}]
+        # Icon-based state for sunk detection by ship names
+        self._icon_prev_alive_set = None
+        self._announced_icon_sunk = set()  # set of ship names announced as sunk
+
+    def reset_sunk_tracking(self):
+        # Reset all sunk announcement/markers and icon alive baseline
+        self._announced_sunk.clear()
+        self._sunk_markers.clear()
+        self._icon_prev_alive_set = None
+        self._announced_icon_sunk.clear()
 
     def _precompute_centers(self):
         self.centers = []
@@ -284,6 +302,7 @@ class GridTracker:
 
     def update(self, frame_bgr):
         g = self.p.grid_size
+        any_change = False
         for r in range(g):
             for c in range(g):
                 labc = self._sample_lab(frame_bgr, r, c)
@@ -300,13 +319,105 @@ class GridTracker:
                             (self.state[r, c] in (SUNK, HIT) and committed == UNKNOWN)
                             or (((r, c) in self.locked_miss) and committed == UNKNOWN)
                         ):
-                            self.state[r, c] = committed
-        # Update icon-color remaining set if enabled
-        if USE_ICON_COLOR_FOR_REMAINING:
-            try:
+                            if self.state[r, c] != committed:
+                                self.state[r, c] = committed
+                                any_change = True
+        # Update icon-color remaining set if enabled; also optional sunk alerts via icons
+        try:
+            if USE_ICON_COLOR_FOR_REMAINING or USE_ICON_COLOR_FOR_SUNK_ALERT:
                 self._update_icon_remaining_by_color(frame_bgr)
+                if USE_ICON_COLOR_FOR_SUNK_ALERT:
+                    self._detect_icon_sunk_transitions()
+        except Exception:
+            pass
+
+        # If the board changed, check for newly formed SUNK clusters and announce/mark
+        if any_change:
+            try:
+                self._detect_new_sunk_clusters()
             except Exception:
                 pass
+
+    def _detect_new_sunk_clusters(self):
+        clusters = self._sunk_cluster_cells()
+        now = time.time()
+        allowed_sizes = {2, 3, 4, 5, 6}
+        for comp in clusters:
+            key = frozenset(comp)
+            if key in self._announced_sunk:
+                continue
+            size = len(comp)
+            if size not in allowed_sizes:
+                continue
+            # New sunk cluster detected; announce and add a marker
+            cx_sum = 0; cy_sum = 0
+            for (r, c) in comp:
+                px, py = self.cell_center_px(r, c)
+                cx_sum += px; cy_sum += py
+            cx = int(round(cx_sum / size)); cy = int(round(cy_sum / size))
+            self._sunk_markers.append({
+                "pos": (cx, cy),
+                "until": now + SUNK_MARKER_DURATION_SEC,
+                "size": size,
+            })
+            self._announced_sunk.add(key)
+            try:
+                print(f"[SUNK] Ship sunk detected: size={size} at approx px=({cx},{cy})")
+            except Exception:
+                pass
+
+    def _sunk_cluster_cells(self):
+        g = self.p.grid_size
+        seen = set()
+        clusters = []
+        for r in range(g):
+            for c in range(g):
+                if self.state[r, c] == SUNK and (r, c) not in seen:
+                    dq = deque([(r, c)])
+                    seen.add((r, c))
+                    comp = []
+                    while dq:
+                        rr, cc = dq.popleft()
+                        comp.append((rr, cc))
+                        for nr, nc in self._nbrs4(rr, cc):
+                            if 0 <= nr < g and 0 <= nc < g and self.state[nr, nc] == SUNK and (nr, nc) not in seen:
+                                seen.add((nr, nc))
+                                dq.append((nr, nc))
+                    clusters.append(comp)
+        return clusters
+
+    def _detect_icon_sunk_transitions(self):
+        # Announce when a ship leaves the icon-alive set (alive -> not-alive)
+        cur = self._icon_remaining_set if self._icon_remaining_set is not None else set()
+        if self._icon_prev_alive_set is None:
+            # Initialize baseline without announcements
+            self._icon_prev_alive_set = set(cur)
+            return
+        sunk_now = set(self._icon_prev_alive_set) - set(cur)
+        if not sunk_now:
+            self._icon_prev_alive_set = set(cur)
+            return
+        now = time.time()
+        for name in sorted(sunk_now):
+            if name in self._announced_icon_sunk:
+                continue
+            coord = REMAINING_SHIP_ICON_COORDS.get(name)
+            if not coord:
+                continue
+            px, py = coord
+            # Place an on-screen marker near the icon and announce
+            self._sunk_markers.append({
+                "pos": (int(px), int(py)),
+                "until": now + SUNK_MARKER_DURATION_SEC,
+                "label": f"SUNK {name}",
+            })
+            try:
+                print(f"[SUNK] {name} sunk detected via icon at px=({px},{py})")
+            except Exception:
+                pass
+            self._announced_icon_sunk.add(name)
+        # Update baseline
+        self._icon_prev_alive_set = set(cur)
 
     def _sample_icon_patch_lab(self, frame, px, py, size=REMAINING_SHIP_SAMPLE_SIZE):
         if frame is None:
@@ -769,6 +880,26 @@ class GridTracker:
                 msg += f" | heat max={self.last_heat_max:.0f}"
             cv2.putText(overlay, msg, (10, 82),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,255,0), 1, cv2.LINE_AA)
+
+        # Draw transient SUNK markers
+        now_ts = time.time()
+        if self._sunk_markers:
+            keep = []
+            for m in self._sunk_markers:
+                if now_ts <= m.get("until", 0):
+                    keep.append(m)
+                    px, py = m.get("pos", (0,0))
+                    label = m.get("label")
+                    cv2.drawMarker(overlay, (px, py), (0,0,255), cv2.MARKER_TILTED_CROSS, 40, 3)
+                    cv2.circle(overlay, (px, py), 28, (0,0,255), 2)
+                    if label:
+                        text = label
+                    else:
+                        size = int(m.get("size", 0))
+                        text = f"SUNK size {size}"
+                    cv2.putText(overlay, text, (px+12, py-12),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2, cv2.LINE_AA)
+            self._sunk_markers = keep
         return overlay
 
     def cell_center_px(self, row, col):
@@ -1152,6 +1283,10 @@ def display_thread():
                         first_ingame_seen_ts = now_ts
                         # Optional: small log to indicate arming delay starts now
                         print(f"[Game] In-Game marker first seen. Waiting {FIRST_INGAME_EXTRA_WAIT_SEC:.1f}s before first move.")
+                        try:
+                            grid_tracker.reset_sunk_tracking()
+                        except Exception:
+                            pass
 
                 _update_click_state(matches_to_draw)
 
@@ -1282,10 +1417,23 @@ def autoplay_thread():
                     grid_tracker.force_mark_miss(r, c)
                 pending_cell = None
 
-            # Only act on our turn
+            # Only act on our turn, and require stability after Enemy Turn ends
+            global last_enemy_turn_seen_ts, _our_turn_ready
             if enemy_turn:
+                # Enemy Turn visible; mark timestamp and disarm our turn readiness
+                last_enemy_turn_seen_ts = now
+                _our_turn_ready = False
                 time.sleep(0.15)
                 continue
+
+            # Enemy Turn not visible; require a stable absence period before first move
+            if not _our_turn_ready:
+                if (now - last_enemy_turn_seen_ts) < ENEMY_TURN_CLEAR_WAIT_SEC:
+                    # Wait until the absence has been stable for the required window
+                    time.sleep(0.1)
+                    continue
+                else:
+                    _our_turn_ready = True
 
             sug = grid_tracker.suggest_next()
             if not sug:
