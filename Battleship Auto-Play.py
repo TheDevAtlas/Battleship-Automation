@@ -1,5 +1,7 @@
 
 import time
+import csv
+from datetime import datetime, date
 import cv2
 import os
 import signal
@@ -29,6 +31,9 @@ subprocess.Popen([
 ])
 
 time.sleep(5)
+
+# Timestamp when the bot/script started (fallback for game time)
+bot_start_ts = time.time()
 
 # === CONFIG ===
 WINDOW_TITLE_HINTS = ["BlueStacks", "Pie64", "HD-Player"]
@@ -91,6 +96,37 @@ matches_lock = threading.Lock()
 
 detection_frame_queue = Queue(maxsize=1)
 stop_threads = threading.Event()
+
+
+def _format_duration(seconds: float) -> str:
+    try:
+        total = int(max(0, round(seconds)))
+    except Exception:
+        total = 0
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+def _append_game_log_row(total_moves: int, start_ts: float, end_ts: float):
+    try:
+        logs_dir = "Logs"
+        os.makedirs(logs_dir, exist_ok=True)
+        day = date.today().isoformat()
+        now = datetime.now()
+        logfile = os.path.join(logs_dir, f"Battleship-Bot-Log-{day}.csv")
+        header_needed = (not os.path.exists(logfile)) or (os.path.getsize(logfile) == 0)
+        duration = _format_duration((end_ts or time.time()) - (start_ts or bot_start_ts))
+        with open(logfile, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if header_needed:
+                writer.writerow(["DATE", "TIME", "TOTAL MOVES", "GAME TIME"])
+            writer.writerow([now.strftime("%Y-%m-%d"), now.strftime("%H:%M:%S"), int(total_moves), duration])
+        print(f"[Log] Appended game result to {logfile}")
+    except Exception as e:
+        print(f"[Log] Failed to write game log: {e}")
 
 AUTO_PLAY_ENABLED = True
 WAIT_AFTER_CLICK_SEC = 2
@@ -1563,6 +1599,12 @@ def graceful_shutdown(reason=""):
     shutdown_started.set()
     print(f"\n[Exit] {reason}")
     stop_threads.set()
+    # Log the game result once on shutdown
+    try:
+        start_ts = first_ingame_seen_ts if first_ingame_seen_ts is not None else bot_start_ts
+        _append_game_log_row(move_count, start_ts, time.time())
+    except Exception as e:
+        print(f"[Exit] Logging exception: {e}")
     # Let display thread close its window in main's finally.
     try:
         kill_bluestacks()
