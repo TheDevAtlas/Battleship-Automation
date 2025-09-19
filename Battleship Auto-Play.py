@@ -61,9 +61,9 @@ TEMPLATES = [
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
 
     {"name":"Rewards", "path":r"ScreenElements\Ships\Curve.png",
-     "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":CYAN},
+     "sqdiff_thresh":0.65, "uniqueness_min":0.15, "color":CYAN},
     {"name":"Exit Rewards", "path":r"ScreenElements\Ships\Cross.png",
-     "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":CYAN},
+     "sqdiff_thresh":0.65, "uniqueness_min":0.15, "color":CYAN},
 ]
 
 MIN_MASK_AREA = 500
@@ -75,9 +75,11 @@ CAPTURE_FPS_TARGET = 45
 
 MIN_MOVES_BEFORE_EXIT = 15
 IN_GAME_LOST_GRACE_SEC = 4.0 
+FIRST_INGAME_EXTRA_WAIT_SEC = 5.0
 
 move_count = 0
 last_ingame_seen_ts = 0.0
+first_ingame_seen_ts = None
 shutdown_started = threading.Event()
 
 cached_monitor = None
@@ -95,14 +97,15 @@ detection_frame_queue = Queue(maxsize=1)
 stop_threads = threading.Event()
 
 AUTO_PLAY_ENABLED = True
-WAIT_AFTER_CLICK_SEC = 2.25
+WAIT_AFTER_CLICK_SEC = 2.5
 
 CLICK_TARGETS = ["Start Game Main Menu", "Start Game Ready Up", "Exit Rewards"]
 CLICK_HOLD_SEC = 0.075
-VISIBLE_DURATION_SEC = 2.25
+VISIBLE_DURATION_SEC = 2.5
 _clicked_flags = {name: False for name in CLICK_TARGETS}
 _visible_since = {name: None for name in CLICK_TARGETS}
 _target_hwnd = None
+_game_armed = False  # Becomes True only after: both start buttons clicked AND In-Game marker seen
 
 def hex_to_bgr(h: str):
     h = h.strip().lstrip('#')
@@ -1010,6 +1013,25 @@ def _update_click_state(matches):
         else:
             _visible_since[name] = None
 
+def _update_game_armed(in_game_active):
+    """Arm gameplay only after both start clicks have occurred AND we have seen In-Game marker,
+    plus an extra initial wait to avoid acting during opponent's first turn due to OCR lag.
+    """
+    global _game_armed, first_ingame_seen_ts
+    if _game_armed:
+        return
+    if in_game_active and _clicked_flags.get("Start Game Main Menu") and _clicked_flags.get("Start Game Ready Up"):
+        # Enforce extra wait after the first time we saw the in-game marker
+        if first_ingame_seen_ts is None:
+            return
+        if (time.time() - first_ingame_seen_ts) < FIRST_INGAME_EXTRA_WAIT_SEC:
+            return
+        _game_armed = True
+        print("[Game] Armed: start buttons clicked and In-Game detected after initial wait. Bot can act on its turn.")
+
+def _is_game_armed():
+    return _game_armed
+
 def display_thread():
     global latest_display_frame, current_matches
     print("Display thread started")
@@ -1032,12 +1054,20 @@ def display_thread():
                     matches_to_draw = current_matches.copy()
                 in_game_active = check_in_game_active(matches_to_draw)
 
-                # Track last time the in-game marker was visible
+                # Track last/first time the in-game marker was visible
                 if in_game_active:
-                    global last_ingame_seen_ts
-                    last_ingame_seen_ts = time.time()
+                    global last_ingame_seen_ts, first_ingame_seen_ts
+                    now_ts = time.time()
+                    last_ingame_seen_ts = now_ts
+                    if first_ingame_seen_ts is None:
+                        first_ingame_seen_ts = now_ts
+                        # Optional: small log to indicate arming delay starts now
+                        print(f"[Game] In-Game marker first seen. Waiting {FIRST_INGAME_EXTRA_WAIT_SEC:.1f}s before first move.")
 
                 _update_click_state(matches_to_draw)
+
+                # Arm the game only when both start buttons are clicked and in-game is visible
+                _update_game_armed(in_game_active)
 
                 if in_game_active:
                     grid_tracker.update(original_frame)
@@ -1136,8 +1166,14 @@ def autoplay_thread():
             in_game = check_in_game_active(matches)
             enemy_turn = check_enemy_turn(matches)
 
+            # Must be in-game visually
             if not in_game:
                 pending_cell = None
+                time.sleep(0.1)
+                continue
+
+            # Require full arming: both start buttons clicked and in-game detected at least once
+            if not _is_game_armed():
                 time.sleep(0.1)
                 continue
 
@@ -1157,6 +1193,7 @@ def autoplay_thread():
                     grid_tracker.force_mark_miss(r, c)
                 pending_cell = None
 
+            # Only act on our turn
             if enemy_turn:
                 time.sleep(0.15)
                 continue
