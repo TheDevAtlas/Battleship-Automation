@@ -58,12 +58,7 @@ TEMPLATES = [
     {"name":"Rewards", "path":r"ScreenElements\Rewards.png",
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
     {"name":"Exit Rewards", "path":r"ScreenElements\Exit-X.png",
-     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
-
-    {"name":"Rewards", "path":r"ScreenElements\Ships\Curve.png",
-     "sqdiff_thresh":0.65, "uniqueness_min":0.15, "color":CYAN},
-    {"name":"Exit Rewards", "path":r"ScreenElements\Ships\Cross.png",
-     "sqdiff_thresh":0.65, "uniqueness_min":0.15, "color":CYAN},
+     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE}
 ]
 
 MIN_MASK_AREA = 500
@@ -105,7 +100,30 @@ VISIBLE_DURATION_SEC = 2.5
 _clicked_flags = {name: False for name in CLICK_TARGETS}
 _visible_since = {name: None for name in CLICK_TARGETS}
 _target_hwnd = None
-_game_armed = False  # Becomes True only after: both start buttons clicked AND In-Game marker seen
+_game_armed = False
+
+SHIP_NAMES = ["S6", "L5", "L4", "T4", "L3", "L2"]
+
+USE_MANUAL_REMAINING_LIST = False
+
+MANUAL_REMAINING_SHIPS = set()
+
+REMAINING_SHIP_ICON_COORDS = {
+    "S6": (515, 397),
+    "L5": (463, 397),
+    "L4": (416, 397),
+    "T4": (350, 397),
+    "L3": (299, 397),
+    "L2": (255, 397),
+}
+
+REMAINING_SHIP_SAMPLE_SIZE = 5
+
+USE_ICON_COLOR_FOR_REMAINING = False
+
+SHIP_ICON_ALIVE_COLOR_HEX = "EF7508"
+
+SHIP_ICON_ALIVE_LAB_THRESH = 16.0
 
 def hex_to_bgr(h: str):
     h = h.strip().lstrip('#')
@@ -179,6 +197,13 @@ class GridTracker:
         self._precompute_centers()
         # Ship shapes (lines + T + S6) for placement-based targeting and heatmaps
         self.ship_shapes = self._init_ship_shapes()
+        # Icon-color based remaining tracking cache
+        self._icon_remaining_set = None
+        try:
+            self._icon_alive_lab = bgr_to_lab(hex_to_bgr(SHIP_ICON_ALIVE_COLOR_HEX))
+        except Exception:
+            # Fallback: some orange-ish default if hex invalid
+            self._icon_alive_lab = bgr_to_lab((0, 165, 255))
 
     def _precompute_centers(self):
         self.centers = []
@@ -276,6 +301,48 @@ class GridTracker:
                             or (((r, c) in self.locked_miss) and committed == UNKNOWN)
                         ):
                             self.state[r, c] = committed
+        # Update icon-color remaining set if enabled
+        if USE_ICON_COLOR_FOR_REMAINING:
+            try:
+                self._update_icon_remaining_by_color(frame_bgr)
+            except Exception:
+                pass
+
+    def _sample_icon_patch_lab(self, frame, px, py, size=REMAINING_SHIP_SAMPLE_SIZE):
+        if frame is None:
+            return None
+        h, w = frame.shape[:2]
+        if not (0 <= px < w and 0 <= py < h):
+            return None
+        half = max(1, int(size) // 2)
+        x1 = max(0, int(px) - half); x2 = min(w, int(px) + half + 1)
+        y1 = max(0, int(py) - half); y2 = min(h, int(py) + half + 1)
+        patch = frame[y1:y2, x1:x2]
+        if patch.size == 0:
+            return None
+        mean_bgr = tuple(map(int, np.mean(patch.reshape(-1, 3), axis=0)))
+        return bgr_to_lab(mean_bgr)
+
+    def _update_icon_remaining_by_color(self, frame_bgr):
+        # Build set of remaining ship names by sampling configured coordinates.
+        # If sampled LAB color is close to "alive orange" -> ship is alive.
+        alive = set()
+        for name in SHIP_NAMES:
+            coord = REMAINING_SHIP_ICON_COORDS.get(name)
+            if not coord:
+                continue
+            px, py = coord
+            # Skip default (0,0) unless user actually placed icon there
+            if (px, py) == (0, 0):
+                continue
+            labc = self._sample_icon_patch_lab(frame_bgr, px, py, REMAINING_SHIP_SAMPLE_SIZE)
+            if labc is None:
+                continue
+            d = lab_dist(labc, self._icon_alive_lab)
+            if d <= SHIP_ICON_ALIVE_LAB_THRESH:
+                alive.add(name)
+        # Store even if empty so logic can use deterministic value
+        self._icon_remaining_set = alive
 
     def _nbrs4(self, r, c):
         return [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]
@@ -418,7 +485,29 @@ class GridTracker:
         return catalog
 
     def _ships_remaining_types(self):
-        # Start with one of each ship type
+        # Icon color mode: if enabled and we have a computed set from sampling,
+        # use only those ships as remaining.
+        try:
+            if USE_ICON_COLOR_FOR_REMAINING and (self._icon_remaining_set is not None):
+                catalog = self._ship_catalog()
+                name_set = set(self._icon_remaining_set)
+                return [ent for ent in catalog if ent["name"] in name_set]
+        except Exception:
+            pass
+
+        # Manual override: if enabled and the user specified a set of remaining ship names,
+        # return only those regardless of auto deduction.
+        try:
+            if USE_MANUAL_REMAINING_LIST and MANUAL_REMAINING_SHIPS:
+                catalog = self._ship_catalog()
+                name_set = set(MANUAL_REMAINING_SHIPS)
+                return [ent for ent in catalog if ent["name"] in name_set]
+        except Exception:
+            # Fall back to auto mode on any unexpected issue
+            pass
+
+        # Auto mode: start with one of each ship type and remove sizes
+        # for each contiguous SUNK cluster found on the board.
         remaining = list(self._ship_catalog())
         sunk_sizes = sorted(self._sunk_clusters(), reverse=True)
         for sz in sunk_sizes:
