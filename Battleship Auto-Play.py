@@ -55,11 +55,15 @@ TEMPLATES = [
     {"name":"Enemy Disconnect", "path":r"ScreenElements\Opponent Disconnected.png",
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
 
-    # WHEN REWARDS SCREEN APPEARS AND EXIT BUTTON IS VISIBLE, CLICK EXIT #
-     {"name":"Rewards", "path":r"ScreenElements\Rewards.png",
+    {"name":"Rewards", "path":r"ScreenElements\Rewards.png",
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
-     {"name":"Exit Rewards", "path":r"ScreenElements\Exit-X.png",
+    {"name":"Exit Rewards", "path":r"ScreenElements\Exit-X.png",
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
+
+    {"name":"Rewards", "path":r"ScreenElements\Ships\Curve.png",
+     "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":CYAN},
+    {"name":"Exit Rewards", "path":r"ScreenElements\Ships\Cross.png",
+     "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":CYAN},
 ]
 
 MIN_MASK_AREA = 500
@@ -91,11 +95,11 @@ detection_frame_queue = Queue(maxsize=1)
 stop_threads = threading.Event()
 
 AUTO_PLAY_ENABLED = True
-WAIT_AFTER_CLICK_SEC = 2.15
+WAIT_AFTER_CLICK_SEC = 2.25
 
 CLICK_TARGETS = ["Start Game Main Menu", "Start Game Ready Up", "Exit Rewards"]
 CLICK_HOLD_SEC = 0.075
-VISIBLE_DURATION_SEC = 2.15
+VISIBLE_DURATION_SEC = 2.25
 _clicked_flags = {name: False for name in CLICK_TARGETS}
 _visible_since = {name: None for name in CLICK_TARGETS}
 _target_hwnd = None
