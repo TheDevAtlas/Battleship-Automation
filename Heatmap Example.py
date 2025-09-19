@@ -3,7 +3,7 @@ import numpy as np
 
 # Simple interactive Battleship heatmap demo
 # - 10x10 board
-# - Ships: lengths [5,4,3,3,2] (line ships)
+# - Ships: lengths [5,4,3,2] (line ships) + T tetromino and S6 curve
 # - Click a cell to mark it as MISS; heatmap updates immediately
 # - Press R to reset; ESC or Q to quit
 
@@ -13,7 +13,14 @@ MARGIN = 24
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 UNKNOWN, MISS = 0, 1
-SHIPS = [5, 4, 3, 3, 2]
+LINE_SHIPS = [5, 4, 3, 2]
+
+# Shape definitions using cell-offset sets (r,c) with (0,0) as an arbitrary origin
+# T tetromino (4 cells):
+BASE_T = {(0,0),(0,1),(0,2),(1,1)}
+# S6 curve: two 3-long segments side-by-side with vertical offset by 1
+#   Column 0 at rows 0,1,2 and column 1 at rows 1,2,3
+BASE_S6 = {(0,0),(1,0),(2,0),(1,1),(2,1),(3,1)}
 
 
 def placement_valid(state, cells):
@@ -49,13 +56,68 @@ def heat_for_length(state, length):
     return heat, any_valid
 
 
+def normalize(cells):
+    minr = min(r for r, _ in cells)
+    minc = min(c for _, c in cells)
+    return tuple(sorted([(r - minr, c - minc) for (r, c) in cells]))
+
+
+def rot90(cells):
+    return {(c, -r) for (r, c) in cells}
+
+
+def mirror(cells):
+    return {(r, -c) for (r, c) in cells}
+
+
+def all_orientations(base):
+    variants = set()
+    work = [set(base)]
+    for _ in range(3):
+        work.append(rot90(work[-1]))
+    all_sets = work + [mirror(s) for s in work]
+    for s in all_sets:
+        variants.add(normalize(s))
+    return [list(v) for v in variants]
+
+
+T_VARIANTS = all_orientations(BASE_T)
+S6_VARIANTS = all_orientations(BASE_S6)
+
+
+def heat_for_shape(state, variants):
+    g = GRID_SIZE
+    heat = np.zeros((g, g), dtype=np.float32)
+    any_valid = False
+    for var in variants:
+        maxr = max(r for r, _ in var)
+        maxc = max(c for _, c in var)
+        for br in range(g - maxr):
+            for bc in range(g - maxc):
+                cells = [(br + r, bc + c) for (r, c) in var]
+                if not placement_valid(state, cells):
+                    continue
+                any_valid = True
+                for (r, c) in cells:
+                    if state[r, c] == UNKNOWN:
+                        heat[r, c] += 1.0
+    return heat, any_valid
+
+
 def compute_heat(state):
     g = GRID_SIZE
     combined = np.zeros((g, g), dtype=np.float32)
-    for L in SHIPS:
+    for L in LINE_SHIPS:
         h, ok = heat_for_length(state, L)
         if ok:
             combined += h
+    # Add custom shapes: T and S6 curve
+    hT, okT = heat_for_shape(state, T_VARIANTS)
+    if okT:
+        combined += hT
+    hS, okS = heat_for_shape(state, S6_VARIANTS)
+    if okS:
+        combined += hS
     return combined
 
 
@@ -107,8 +169,8 @@ def draw_board(state, heat):
                 cv2.line(img, (x1+6, y2-6), (x2-6, y1+6), (0, 180, 255), 2)
 
     # Legend / instructions
-    cv2.putText(img, "Battleship Heatmap Demo (MISS on click)", (MARGIN, 18), FONT, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
-    cv2.putText(img, "Ships: 5,4,3,3,2   R: reset   ESC/Q: quit", (MARGIN, h-10), FONT, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
+    cv2.putText(img, "Heatmap Demo (MISS on click)", (MARGIN, 18), FONT, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
+    cv2.putText(img, "Ships: lines [5,4,3,2] + T + S6   R: reset   ESC/Q: quit", (MARGIN, h-10), FONT, 0.47, (230, 230, 230), 1, cv2.LINE_AA)
     if vmax > 0:
         cv2.putText(img, f"max={int(vmax)}", (w-100, 18), FONT, 0.55, (240,240,240), 1, cv2.LINE_AA)
 
