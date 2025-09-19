@@ -164,13 +164,13 @@ class GridTracker:
         self.last_reason = ""
         self.locked_miss = set()
         self.clicked_cells = set()
-        # Classic Battleship ship lengths (can be adjusted): 5,4,3,3,2
-        self.ships_initial = [5, 4, 3, 3, 2]
+        # Game ship set: lines [5,4,3,2] + T4 + S6 (sizes: 6,5,4,4,3,2)
+        self.ships_initial = [6, 5, 4, 4, 3, 2]
         # Cache of latest combined heatmap for overlay/suggestion
         self.last_heat = None
         self.last_heat_max = 0.0
         self._precompute_centers()
-        # Ship shapes for placement-based targeting
+        # Ship shapes (lines + T + S6) for placement-based targeting and heatmaps
         self.ship_shapes = self._init_ship_shapes()
 
     def _precompute_centers(self):
@@ -340,12 +340,12 @@ class GridTracker:
                         self.last_heat_max = 0.0
                         return (rc, cc, 90.0, self.last_reason)
 
-        # Hunt mode: sum heatmaps from all remaining ships (line ships)
+        # Hunt mode: sum heatmaps from all remaining ships (all shapes)
         heat, _ = self.compute_probability_heatmap()
         self.last_heat = heat
         self.last_heat_max = float(np.max(heat)) if heat is not None else 0.0
         r, c, score = self._pick_max_unknown(heat)
-        self.last_reason = "Hunt mode: summed valid placements per ship length."
+        self.last_reason = "Hunt mode: summed valid placements for all shapes."
         return (r, c, float(score), self.last_reason)
 
     # -------------------- Line-ship probability heatmap --------------------
@@ -395,113 +395,88 @@ class GridTracker:
                 return False
         return True
 
-    def _heat_for_length(self, length):
+    def _shape_variants(self, name):
+        return self.ship_shapes.get(name, [])
+
+    def _ship_catalog(self):
+        # Each entry: {name, size, variants}
+        catalog = [
+            {"name": "S6", "size": 6, "variants": self._shape_variants("S6")},
+            {"name": "L5", "size": 5, "variants": self._shape_variants("L5")},
+            {"name": "L4", "size": 4, "variants": self._shape_variants("L4")},
+            {"name": "T4", "size": 4, "variants": self._shape_variants("T4")},
+            {"name": "L3", "size": 3, "variants": self._shape_variants("L3")},
+            {"name": "L2", "size": 2, "variants": self._shape_variants("L2")},
+        ]
+        return catalog
+
+    def _ships_remaining_types(self):
+        # Start with one of each ship type
+        remaining = list(self._ship_catalog())
+        sunk_sizes = sorted(self._sunk_clusters(), reverse=True)
+        for sz in sunk_sizes:
+            for i, ent in enumerate(remaining):
+                if ent["size"] == sz:
+                    remaining.pop(i)
+                    break
+        return remaining
+
+    def _heat_for_shape_variants(self, variants):
         g = self.p.grid_size
         heat = np.zeros((g, g), dtype=np.float32)
         any_valid = False
-        for cells in self._iter_line_placements(length):
-            if not self._placement_valid(cells):
-                continue
-            any_valid = True
-            for (r, c) in cells:
-                if self.state[r, c] == UNKNOWN:
-                    heat[r, c] += 1.0
+        for variant in variants:
+            maxr = max(r for r, _ in variant)
+            maxc = max(c for _, c in variant)
+            for base_r in range(g - maxr):
+                for base_c in range(g - maxc):
+                    placement = [(base_r + r, base_c + c) for (r, c) in variant]
+                    if not self._placement_valid(placement):
+                        continue
+                    any_valid = True
+                    for (r, c) in placement:
+                        if self.state[r, c] == UNKNOWN:
+                            heat[r, c] += 1.0
         return heat, any_valid
 
     def compute_probability_heatmap(self):
         g = self.p.grid_size
         combined = np.zeros((g, g), dtype=np.float32)
         per_ship = {}
-        ships = self._ships_remaining()
-        for L in ships:
-            h, ok = self._heat_for_length(L)
-            per_ship[L] = h
+        ships = self._ships_remaining_types()
+        for ent in ships:
+            h, ok = self._heat_for_shape_variants(ent["variants"])
+            per_ship[ent["name"]] = h
             if ok:
                 combined += h
         return combined, per_ship
 
-    def _line_heat_for_cluster(self, cluster, ships):
-        # Only valid for colinear clusters; returns heat or None
-        rows = {r for r, _ in cluster}
-        cols = {c for _, c in cluster}
+    def _shape_heat_for_cluster(self, cluster, ships):
+        # Build heat considering only placements of remaining ship shapes that cover the cluster
         g = self.p.grid_size
+        cluster_set = set(cluster)
         heat = np.zeros((g, g), dtype=np.float32)
         any_valid = False
-        k = len(cluster)
-        # Special case: single hit -> consider both orientations
-        if k == 1:
-            r0, c0 = cluster[0]
-            # Horizontal around (r0,c0)
-            for L in ships:
-                start_min = max(0, c0 - L + 1)
-                start_max = min(c0, g - L)
-                for sc in range(start_min, start_max + 1):
-                    cells = [(r0, sc + d) for d in range(L)]
-                    if not self._placement_valid(cells):
-                        continue
-                    any_valid = True
-                    for (r, c) in cells:
-                        if self.state[r, c] == UNKNOWN:
-                            heat[r, c] += 1.0
-            # Vertical around (r0,c0)
-            for L in ships:
-                start_min = max(0, r0 - L + 1)
-                start_max = min(r0, g - L)
-                for sr in range(start_min, start_max + 1):
-                    cells = [(sr + d, c0) for d in range(L)]
-                    if not self._placement_valid(cells):
-                        continue
-                    any_valid = True
-                    for (r, c) in cells:
-                        if self.state[r, c] == UNKNOWN:
-                            heat[r, c] += 1.0
-            return heat if any_valid else None
-
-        if len(rows) == 1:
-            r0 = next(iter(rows))
-            cmin = min(c for _, c in cluster)
-            cmax = max(c for _, c in cluster)
-            for L in ships:
-                if L < k:
-                    continue
-                start_min = max(0, cmax - L + 1)
-                start_max = min(cmin, g - L)
-                for sc in range(start_min, start_max + 1):
-                    cells = [(r0, sc + d) for d in range(L)]
-                    # Must include all hits in cluster
-                    if not set(cluster).issubset(set(cells)):
-                        continue
-                    if not self._placement_valid(cells):
-                        continue
-                    any_valid = True
-                    for (r, c) in cells:
-                        if self.state[r, c] == UNKNOWN:
-                            heat[r, c] += 1.0
-        elif len(cols) == 1:
-            c0 = next(iter(cols))
-            rmin = min(r for r, _ in cluster)
-            rmax = max(r for r, _ in cluster)
-            for L in ships:
-                if L < k:
-                    continue
-                start_min = max(0, rmax - L + 1)
-                start_max = min(rmin, g - L)
-                for sr in range(start_min, start_max + 1):
-                    cells = [(sr + d, c0) for d in range(L)]
-                    if not set(cluster).issubset(set(cells)):
-                        continue
-                    if not self._placement_valid(cells):
-                        continue
-                    any_valid = True
-                    for (r, c) in cells:
-                        if self.state[r, c] == UNKNOWN:
-                            heat[r, c] += 1.0
-        else:
-            return None
+        for ent in ships:
+            for variant in ent["variants"]:
+                maxr = max(r for r, _ in variant)
+                maxc = max(c for _, c in variant)
+                for base_r in range(g - maxr):
+                    for base_c in range(g - maxc):
+                        placement = [(base_r + r, base_c + c) for (r, c) in variant]
+                        ps = set(placement)
+                        if not cluster_set.issubset(ps):
+                            continue
+                        if not self._placement_valid(placement):
+                            continue
+                        any_valid = True
+                        for (r, c) in placement:
+                            if self.state[r, c] == UNKNOWN:
+                                heat[r, c] += 1.0
         return heat if any_valid else None
 
     def _heatmap_target_mode(self):
-        ships = self._ships_remaining()
+        ships = self._ships_remaining_types()
         hits = list(zip(*np.where(self.state == HIT)))
         if not hits:
             return None
@@ -511,7 +486,7 @@ class GridTracker:
         combined = np.zeros((g, g), dtype=np.float32)
         any_valid = False
         for cluster in clusters:
-            local = self._line_heat_for_cluster(cluster, ships)
+            local = self._shape_heat_for_cluster(cluster, ships)
             if local is not None:
                 combined += local
                 any_valid = True
