@@ -51,6 +51,15 @@ TEMPLATES = [
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":GREEN},
     {"name":"Enemy Turn", "path":r"ScreenElements\Enemy Turn.png",
      "sqdiff_thresh":0.65, "uniqueness_min":0.01, "color":ORANGE},
+
+    {"name":"Enemy Disconnect", "path":r"ScreenElements\Opponent Disconnected.png",
+     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
+
+    # WHEN REWARDS SCREEN APPEARS AND EXIT BUTTON IS VISIBLE, CLICK EXIT #
+     {"name":"Rewards", "path":r"ScreenElements\Rewards.png",
+     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
+     {"name":"Exit Rewards", "path":r"ScreenElements\Exit-X.png",
+     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
 ]
 
 MIN_MASK_AREA = 500
@@ -84,7 +93,7 @@ stop_threads = threading.Event()
 AUTO_PLAY_ENABLED = True
 WAIT_AFTER_CLICK_SEC = 2.15
 
-CLICK_TARGETS = ["Start Game Main Menu", "Start Game Ready Up"]
+CLICK_TARGETS = ["Start Game Main Menu", "Start Game Ready Up", "Exit Rewards"]
 CLICK_HOLD_SEC = 0.075
 VISIBLE_DURATION_SEC = 2.15
 _clicked_flags = {name: False for name in CLICK_TARGETS}
@@ -755,6 +764,12 @@ def check_enemy_turn(matches):
             return True
     return False
 
+def check_enemy_disconnect(matches):
+    for match in matches:
+        if match.get("name") == "Enemy Disconnect":
+            return True
+    return False
+
 def _click_center_of_match(match):
     global cached_monitor, _target_hwnd
     try:
@@ -780,14 +795,22 @@ def _click_center_of_match(match):
 def _update_click_state(matches):
     now = time.time()
     present = {name: None for name in CLICK_TARGETS}
+    # Rewards gate: only click "Exit Rewards" when "Rewards" is visible
+    rewards_visible = False
     for m in matches:
         n = m.get("name")
+        if n == "Rewards":
+            rewards_visible = True
         if n in present:
             present[n] = m
     for name in CLICK_TARGETS:
         if _clicked_flags[name]:
             continue
         m = present[name]
+        # Special case: require Rewards to be visible to allow Exit click
+        if name == "Exit Rewards" and not rewards_visible:
+            _visible_since[name] = None
+            continue
         if m is not None:
             if _visible_since[name] is None:
                 _visible_since[name] = now
@@ -1005,6 +1028,13 @@ def watchdog_thread():
     print("Watchdog thread started")
     while not stop_threads.is_set():
         try:
+            # Immediate exit if opponent disconnect detected
+            with matches_lock:
+                matches_snapshot = current_matches.copy()
+            if check_enemy_disconnect(matches_snapshot):
+                graceful_shutdown("Opponent disconnected detected.")
+                break
+
             now = time.time()
             # Only consider exit after we’ve fired enough shots
             if move_count >= MIN_MOVES_BEFORE_EXIT:
