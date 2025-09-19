@@ -164,6 +164,11 @@ class GridTracker:
         self.last_reason = ""
         self.locked_miss = set()
         self.clicked_cells = set()
+        # Classic Battleship ship lengths (can be adjusted): 5,4,3,3,2
+        self.ships_initial = [5, 4, 3, 3, 2]
+        # Cache of latest combined heatmap for overlay/suggestion
+        self.last_heat = None
+        self.last_heat_max = 0.0
         self._precompute_centers()
         # Ship shapes for placement-based targeting
         self.ship_shapes = self._init_ship_shapes()
@@ -303,44 +308,214 @@ class GridTracker:
         return (best[1], best[2], why)
 
     def suggest_next(self):
-        # 1) If there are hits, use shape-aware probability around each cluster.
-        # 2) Otherwise, compute a board-wide probability heatmap with all shapes.
+        # Priority: If there are hits, enter target mode and focus on
+        # line placements that cover each hit cluster (sink it!).
         g = self.p.grid_size
-        unknown_cells = list(zip(*np.where(self.state == UNKNOWN)))
-        if not unknown_cells:
+        if not np.any(self.state == UNKNOWN):
             self.last_reason = "No UNKNOWN cells; board seems complete."
+            self.last_heat = None
+            self.last_heat_max = 0.0
             return None
 
         hits = list(zip(*np.where(self.state == HIT)))
         if hits:
-            heat = np.zeros((g, g), dtype=np.float32)
+            heat_t = self._heatmap_target_mode()
+            if heat_t is not None and np.any(heat_t > 0):
+                self.last_heat = heat_t
+                self.last_heat_max = float(np.max(heat_t))
+                r, c, score = self._pick_max_unknown(heat_t)
+                self.last_reason = "Target mode: line placements covering hit cluster(s)."
+                return (r, c, float(score), self.last_reason)
+            # Fallback probe around hits when no valid line placement found
             clusters = self._clusters(hits)
             clusters.sort(key=len, reverse=True)
-            any_valid = False
-            for cluster in clusters:
-                local = self._heatmap_for_cluster(cluster)
-                if local is not None:
-                    heat += local
-                    any_valid = True
-            if any_valid:
-                r, c, score = self._pick_max_unknown(heat)
-                self.last_reason = "Target mode: shape placements covering hit clusters."
-                return (r, c, float(score), self.last_reason)
-            # Fallback to probing neighbors if shape-fitting fails for current evidence
             for cluster in clusters:
                 for (r, c) in cluster:
                     neighbors = [(r-1,c,"up"),(r+1,c,"down"),(r,c-1,"left"),(r,c+1,"right")]
                     cand = [(rr,cc,lab) for (rr,cc,lab) in neighbors if self._is_unknown(rr,cc)]
                     if cand:
                         rc, cc, why = self._best_target(cand)
-                        self.last_reason = f"Probing around hit at ({r},{c}): {why}"
-                        return (rc, cc, 90, self.last_reason)
+                        self.last_reason = f"Probe around hit at ({r},{c}): {why}"
+                        self.last_heat = None
+                        self.last_heat_max = 0.0
+                        return (rc, cc, 90.0, self.last_reason)
 
-        # Hunt heatmap: count all valid placements of all shapes on UNKNOWN/HIT cells
-        heat = self._heatmap_global()
+        # Hunt mode: sum heatmaps from all remaining ships (line ships)
+        heat, _ = self.compute_probability_heatmap()
+        self.last_heat = heat
+        self.last_heat_max = float(np.max(heat)) if heat is not None else 0.0
         r, c, score = self._pick_max_unknown(heat)
-        self.last_reason = "Hunt mode: global shape-placement heatmap."
+        self.last_reason = "Hunt mode: summed valid placements per ship length."
         return (r, c, float(score), self.last_reason)
+
+    # -------------------- Line-ship probability heatmap --------------------
+    def _sunk_clusters(self):
+        g = self.p.grid_size
+        seen = set()
+        sizes = []
+        for r in range(g):
+            for c in range(g):
+                if self.state[r, c] == SUNK and (r, c) not in seen:
+                    dq = deque([(r, c)])
+                    seen.add((r, c))
+                    cnt = 0
+                    while dq:
+                        rr, cc = dq.popleft()
+                        cnt += 1
+                        for nr, nc in self._nbrs4(rr, cc):
+                            if 0 <= nr < g and 0 <= nc < g and self.state[nr, nc] == SUNK and (nr, nc) not in seen:
+                                seen.add((nr, nc))
+                                dq.append((nr, nc))
+                    sizes.append(cnt)
+        return sizes
+
+    def _ships_remaining(self):
+        remaining = list(self.ships_initial)
+        # Remove sunk ships by size match when possible
+        for sz in sorted(self._sunk_clusters(), reverse=True):
+            if sz in remaining:
+                remaining.remove(sz)
+        return remaining
+
+    def _iter_line_placements(self, length):
+        g = self.p.grid_size
+        # Horizontal
+        for r in range(g):
+            for c in range(g - length + 1):
+                yield [(r, c + k) for k in range(length)]
+        # Vertical
+        for c in range(g):
+            for r in range(g - length + 1):
+                yield [(r + k, c) for k in range(length)]
+
+    def _placement_valid(self, placement):
+        for (r, c) in placement:
+            st = self.state[r, c]
+            if st == MISS or st == SUNK:
+                return False
+        return True
+
+    def _heat_for_length(self, length):
+        g = self.p.grid_size
+        heat = np.zeros((g, g), dtype=np.float32)
+        any_valid = False
+        for cells in self._iter_line_placements(length):
+            if not self._placement_valid(cells):
+                continue
+            any_valid = True
+            for (r, c) in cells:
+                if self.state[r, c] == UNKNOWN:
+                    heat[r, c] += 1.0
+        return heat, any_valid
+
+    def compute_probability_heatmap(self):
+        g = self.p.grid_size
+        combined = np.zeros((g, g), dtype=np.float32)
+        per_ship = {}
+        ships = self._ships_remaining()
+        for L in ships:
+            h, ok = self._heat_for_length(L)
+            per_ship[L] = h
+            if ok:
+                combined += h
+        return combined, per_ship
+
+    def _line_heat_for_cluster(self, cluster, ships):
+        # Only valid for colinear clusters; returns heat or None
+        rows = {r for r, _ in cluster}
+        cols = {c for _, c in cluster}
+        g = self.p.grid_size
+        heat = np.zeros((g, g), dtype=np.float32)
+        any_valid = False
+        k = len(cluster)
+        # Special case: single hit -> consider both orientations
+        if k == 1:
+            r0, c0 = cluster[0]
+            # Horizontal around (r0,c0)
+            for L in ships:
+                start_min = max(0, c0 - L + 1)
+                start_max = min(c0, g - L)
+                for sc in range(start_min, start_max + 1):
+                    cells = [(r0, sc + d) for d in range(L)]
+                    if not self._placement_valid(cells):
+                        continue
+                    any_valid = True
+                    for (r, c) in cells:
+                        if self.state[r, c] == UNKNOWN:
+                            heat[r, c] += 1.0
+            # Vertical around (r0,c0)
+            for L in ships:
+                start_min = max(0, r0 - L + 1)
+                start_max = min(r0, g - L)
+                for sr in range(start_min, start_max + 1):
+                    cells = [(sr + d, c0) for d in range(L)]
+                    if not self._placement_valid(cells):
+                        continue
+                    any_valid = True
+                    for (r, c) in cells:
+                        if self.state[r, c] == UNKNOWN:
+                            heat[r, c] += 1.0
+            return heat if any_valid else None
+
+        if len(rows) == 1:
+            r0 = next(iter(rows))
+            cmin = min(c for _, c in cluster)
+            cmax = max(c for _, c in cluster)
+            for L in ships:
+                if L < k:
+                    continue
+                start_min = max(0, cmax - L + 1)
+                start_max = min(cmin, g - L)
+                for sc in range(start_min, start_max + 1):
+                    cells = [(r0, sc + d) for d in range(L)]
+                    # Must include all hits in cluster
+                    if not set(cluster).issubset(set(cells)):
+                        continue
+                    if not self._placement_valid(cells):
+                        continue
+                    any_valid = True
+                    for (r, c) in cells:
+                        if self.state[r, c] == UNKNOWN:
+                            heat[r, c] += 1.0
+        elif len(cols) == 1:
+            c0 = next(iter(cols))
+            rmin = min(r for r, _ in cluster)
+            rmax = max(r for r, _ in cluster)
+            for L in ships:
+                if L < k:
+                    continue
+                start_min = max(0, rmax - L + 1)
+                start_max = min(rmin, g - L)
+                for sr in range(start_min, start_max + 1):
+                    cells = [(sr + d, c0) for d in range(L)]
+                    if not set(cluster).issubset(set(cells)):
+                        continue
+                    if not self._placement_valid(cells):
+                        continue
+                    any_valid = True
+                    for (r, c) in cells:
+                        if self.state[r, c] == UNKNOWN:
+                            heat[r, c] += 1.0
+        else:
+            return None
+        return heat if any_valid else None
+
+    def _heatmap_target_mode(self):
+        ships = self._ships_remaining()
+        hits = list(zip(*np.where(self.state == HIT)))
+        if not hits:
+            return None
+        clusters = self._clusters(hits)
+        clusters.sort(key=len, reverse=True)
+        g = self.p.grid_size
+        combined = np.zeros((g, g), dtype=np.float32)
+        any_valid = False
+        for cluster in clusters:
+            local = self._line_heat_for_cluster(cluster, ships)
+            if local is not None:
+                combined += local
+                any_valid = True
+        return combined if any_valid else None
 
     # -------------------- Shape logic --------------------
     def _init_ship_shapes(self):
@@ -480,14 +655,48 @@ class GridTracker:
                 elif st == HIT:   color = (0,0,255)
                 else:             color = (0,0,0)
                 cv2.circle(overlay, (cx,cy), r, color, 2)
+        # Compute next move first; this also refreshes the cached heatmap
         sug = self.suggest_next()
+        # Draw probability heat overlay on top of picker circles using latest heat
+        if self.last_heat is not None and self.last_heat_max > 0:
+            heat_overlay = overlay.copy()
+            # Simple blue-to-red colormap
+            def heat_color01(t):
+                t = max(0.0, min(1.0, float(t)))
+                # Interpolate from blue(255,0,0) -> cyan(255,255,0) -> yellow(0,255,255) -> red(0,0,255) in BGR
+                if t < 0.33:
+                    k = t / 0.33
+                    return (255, int(255*k), 0)
+                elif t < 0.66:
+                    k = (t - 0.33) / 0.33
+                    return (int(255*(1-k)), 255, int(255*k))
+                else:
+                    k = (t - 0.66) / 0.34
+                    return (0, int(255*(1-k)), 255)
+            for row in range(self.p.grid_size):
+                for col in range(self.p.grid_size):
+                    v = float(self.last_heat[row, col])
+                    if v <= 0.0:
+                        continue
+                    if self.state[row, col] != UNKNOWN:
+                        # Only highlight actionable cells
+                        continue
+                    cx, cy = self.centers[row][col]
+                    t = v / max(1e-6, self.last_heat_max)
+                    color = heat_color01(t)
+                    cv2.circle(heat_overlay, (cx, cy), max(6, r-2), color, -1)
+            overlay = cv2.addWeighted(heat_overlay, 0.35, overlay, 0.65, 0)
+
         if sug:
             rr, cc, score, _ = sug
             cx, cy = self.centers[rr][cc]
             cv2.drawMarker(overlay, (cx,cy), (0,255,0), cv2.MARKER_CROSS, 28, 2)
             cv2.putText(overlay, f"Next: ({rr},{cc}) score={score:.1f}",
                         (10, 54), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2, cv2.LINE_AA)
-            cv2.putText(overlay, self.last_reason, (10, 82),
+            msg = self.last_reason
+            if self.last_heat_max > 0:
+                msg += f" | heat max={self.last_heat_max:.0f}"
+            cv2.putText(overlay, msg, (10, 82),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0,255,0), 1, cv2.LINE_AA)
         return overlay
 
