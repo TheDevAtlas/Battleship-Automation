@@ -128,6 +128,87 @@ def _append_game_log_row(total_moves: int, start_ts: float, end_ts: float):
     except Exception as e:
         print(f"[Log] Failed to write game log: {e}")
 
+# === HIT HEATMAP (10x10 CSV) ===
+HIT_HEATMAP_FILE = os.path.join("Logs", "Battleship-Hit-Heatmap.csv")
+
+def _ensure_heatmap_initialized(size: int = 10):
+    try:
+        os.makedirs(os.path.dirname(HIT_HEATMAP_FILE), exist_ok=True)
+        if not os.path.exists(HIT_HEATMAP_FILE):
+            with open(HIT_HEATMAP_FILE, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                for _ in range(size):
+                    writer.writerow([0] * size)
+            return
+        # If exists, make sure it has correct dimensions; otherwise normalize.
+        mat = _load_heatmap()
+        if len(mat) != size or any(len(row) != size for row in mat):
+            mat2 = [[0 for _ in range(size)] for __ in range(size)]
+            for r in range(min(size, len(mat))):
+                for c in range(min(size, len(mat[r]))):
+                    try:
+                        mat2[r][c] = int(mat[r][c])
+                    except Exception:
+                        mat2[r][c] = 0
+            _save_heatmap(mat2)
+    except Exception as e:
+        print(f"[Heatmap] Init error: {e}")
+
+def _load_heatmap():
+    try:
+        if not os.path.exists(HIT_HEATMAP_FILE):
+            return []
+        with open(HIT_HEATMAP_FILE, mode="r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            mat = []
+            for row in reader:
+                try:
+                    mat.append([int(x) for x in row])
+                except Exception:
+                    # Skip malformed lines
+                    pass
+            return mat
+    except Exception as e:
+        print(f"[Heatmap] Load error: {e}")
+        return []
+
+def _save_heatmap(mat):
+    try:
+        os.makedirs(os.path.dirname(HIT_HEATMAP_FILE), exist_ok=True)
+        with open(HIT_HEATMAP_FILE, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            for row in mat:
+                writer.writerow(list(row))
+    except Exception as e:
+        print(f"[Heatmap] Save error: {e}")
+
+def _increment_hit_heatmap(row: int, col: int, size: int = 10):
+    try:
+        if row is None or col is None:
+            return
+        if row < 0 or col < 0 or row >= size or col >= size:
+            return
+        _ensure_heatmap_initialized(size)
+        mat = _load_heatmap()
+        # Normalize matrix size if needed
+        if len(mat) != size or any(len(r) != size for r in mat):
+            base = [[0 for _ in range(size)] for __ in range(size)]
+            for r in range(min(size, len(mat))):
+                for c in range(min(size, len(mat[r]))):
+                    try:
+                        base[r][c] = int(mat[r][c])
+                    except Exception:
+                        base[r][c] = 0
+            mat = base
+        mat[row][col] = int(mat[row][col]) + 1
+        _save_heatmap(mat)
+        try:
+            print(f"[Heatmap] +1 at ({row},{col}); total={mat[row][col]}")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[Heatmap] Increment error at ({row},{col}): {e}")
+
 AUTO_PLAY_ENABLED = True
 WAIT_AFTER_CLICK_SEC = 2
 
@@ -236,6 +317,9 @@ class GridTracker:
         # Cache of latest combined heatmap for overlay/suggestion
         self.last_heat = None
         self.last_heat_max = 0.0
+        # Track when grid was last updated or changed to sync autoplay decisions
+        self.last_update_ts = 0.0
+        self.last_change_ts = 0.0
         self._precompute_centers()
         # Ship shapes (lines + T + S6) for placement-based targeting and heatmaps
         self.ship_shapes = self._init_ship_shapes()
@@ -374,6 +458,11 @@ class GridTracker:
                 self._detect_new_sunk_clusters()
             except Exception:
                 pass
+        # Record update timestamps for synchronization with autoplay
+        now_ts = time.time()
+        self.last_update_ts = now_ts
+        if any_change:
+            self.last_change_ts = now_ts
 
     def _detect_new_sunk_clusters(self):
         clusters = self._sunk_cluster_cells()
@@ -1526,6 +1615,11 @@ def autoplay_thread():
                 st = grid_tracker.state[r, c]
                 if st in (HIT, SUNK):
                     print(f"Result: HIT at ({r},{c}) -> taking another shot")
+                    # Log this successful hit into the persistent 10x10 heatmap
+                    try:
+                        _increment_hit_heatmap(r, c, size=grid_tracker.p.grid_size)
+                    except Exception as _e:
+                        print(f"[Heatmap] Log hit error: {_e}")
                 elif st == MISS:
                     print(f"Result: MISS at ({r},{c}) -> opponent's turn")
                 else:
@@ -1550,6 +1644,15 @@ def autoplay_thread():
                     continue
                 else:
                     _our_turn_ready = True
+
+            # Ensure we base our decision on a fresh grid update.
+            # Wait briefly for display thread to run GridTracker.update() after this moment.
+            request_ts = time.time()
+            max_wait = 0.6
+            waited = 0.0
+            while (grid_tracker.last_update_ts < request_ts) and (waited < max_wait) and not stop_threads.is_set():
+                time.sleep(0.02)
+                waited += 0.02
 
             sug = grid_tracker.suggest_next()
             if not sug:
