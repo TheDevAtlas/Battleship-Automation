@@ -131,6 +131,14 @@ def _append_game_log_row(total_moves: int, start_ts: float, end_ts: float):
 # === HIT HEATMAP (10x10 CSV) ===
 HIT_HEATMAP_FILE = os.path.join("Logs", "Battleship-Hit-Heatmap.csv")
 
+# Persistent-heatmap usage config
+USE_PERSISTENT_HIT_HEAT = True
+# Weighting for blending the learned hit-frequency heatmap
+PERSISTENT_HIT_HEAT_WEIGHT_HUNT = 0.5
+PERSISTENT_HIT_HEAT_WEIGHT_TARGET = 0.05
+# Small random noise to diversify choices / break ties
+RANDOM_NOISE_WEIGHT = 0.02
+
 def _ensure_heatmap_initialized(size: int = 10):
     try:
         os.makedirs(os.path.dirname(HIT_HEATMAP_FILE), exist_ok=True)
@@ -336,6 +344,16 @@ class GridTracker:
         # Icon-based state for sunk detection by ship names
         self._icon_prev_alive_set = None
         self._announced_icon_sunk = set()  # set of ship names announced as sunk
+        # Persistent cross-game hit heatmap (loaded from CSV)
+        self.hist_heat = None  # np.ndarray[g,g] of float32, raw counts
+        try:
+            if USE_PERSISTENT_HIT_HEAT:
+                self.load_persistent_hit_heatmap()
+        except Exception as e:
+            try:
+                print(f"[Heatmap] Failed to load persistent heatmap at init: {e}")
+            except Exception:
+                pass
 
     def reset_sunk_tracking(self):
         # Reset all sunk announcement/markers and icon alive baseline
@@ -463,6 +481,47 @@ class GridTracker:
         self.last_update_ts = now_ts
         if any_change:
             self.last_change_ts = now_ts
+
+    def load_persistent_hit_heatmap(self):
+        """Load the cross-game hit-frequency heatmap from CSV into self.hist_heat.
+        Dimensions are normalized/clamped to current grid size.
+        """
+        _ensure_heatmap_initialized(self.p.grid_size)
+        mat = _load_heatmap() or []
+        g = self.p.grid_size
+        arr = np.zeros((g, g), dtype=np.float32)
+        try:
+            for r in range(min(g, len(mat))):
+                row = mat[r]
+                for c in range(min(g, len(row))):
+                    try:
+                        arr[r, c] = float(int(row[c]))
+                    except Exception:
+                        arr[r, c] = 0.0
+        except Exception:
+            pass
+        self.hist_heat = arr
+        try:
+            total = float(np.sum(self.hist_heat))
+            print(f"[Heatmap] Loaded persistent hit heatmap. Total hits recorded: {total:.0f}")
+        except Exception:
+            pass
+
+    def _hist_heat_norm_masked(self):
+        """Return normalized persistent heatmap masked to UNKNOWN cells only."""
+        g = self.p.grid_size
+        if (self.hist_heat is None) or (not USE_PERSISTENT_HIT_HEAT):
+            return np.zeros((g, g), dtype=np.float32)
+        arr = self.hist_heat.astype(np.float32).copy()
+        m = float(np.max(arr))
+        if m > 0:
+            arr /= m
+        else:
+            arr.fill(0.0)
+        # Mask non-UNKNOWN cells
+        mask = (self.state == UNKNOWN)
+        arr *= mask.astype(np.float32)
+        return arr
 
     def _detect_new_sunk_clusters(self):
         clusters = self._sunk_cluster_cells()
@@ -633,15 +692,32 @@ class GridTracker:
             heat_t = self._heatmap_target_mode()
             if heat_t is not None and np.any(heat_t > 0):
                 elim_scores, _ = self._compute_elimination_scores(restrict_to_hits=True)
-                self.last_heat = heat_t
-                self.last_heat_max = float(np.max(heat_t))
-                heat_norm = heat_t / max(1e-6, self.last_heat_max)
-                w_prob, w_elim = 0.7, 0.3
-                blended = (w_prob * heat_norm) + (w_elim * elim_scores)
+                # Normalize primary heat
+                max_primary = float(np.max(heat_t))
+                heat_norm = heat_t / max(1e-6, max_primary)
+                # Persistent history and small random jitter
+                hist_norm = self._hist_heat_norm_masked()
+                rand = np.random.random((g, g)).astype(np.float32) * (self.state == UNKNOWN).astype(np.float32)
+                # Weights
+                w_prob = 0.65
+                w_elim = 0.25
+                w_hist = PERSISTENT_HIT_HEAT_WEIGHT_TARGET if USE_PERSISTENT_HIT_HEAT else 0.0
+                w_rand = RANDOM_NOISE_WEIGHT
+                blended_det = (w_prob * heat_norm) + (w_elim * elim_scores) + (w_hist * hist_norm)
+                blended = blended_det + (w_rand * rand)
+                # Cache blended heat for overlay (deterministic portion only to avoid flicker)
+                self.last_heat = blended_det
+                self.last_heat_max = float(np.max(self.last_heat))
                 r_b, c_b, score_b = self._pick_max_unknown(blended)
                 r_h, c_h, _ = self._pick_max_unknown(heat_t)
                 self.last_used_elimination = (r_b != r_h or c_b != c_h)
-                self.last_reason = "Target mode: blended heat + elimination" + (" [Elimination-driven]" if self.last_used_elimination else "")
+                reason_bits = ["Target mode"]
+                reason_bits.append("heat")
+                reason_bits.append("elim")
+                if USE_PERSISTENT_HIT_HEAT:
+                    reason_bits.append("hist")
+                reason_bits.append("rand")
+                self.last_reason = ": ".join([reason_bits[0], " + ".join(reason_bits[1:])]) + (" [Elimination-driven]" if self.last_used_elimination else "")
                 return (r_b, c_b, float(score_b), self.last_reason)
             # Fallback probe around hits when no valid line placement found
             clusters = self._clusters(hits)
@@ -660,16 +736,30 @@ class GridTracker:
 
         # Hunt mode: sum heatmaps from all remaining ships (all shapes)
         heat, _ = self.compute_probability_heatmap()
-        self.last_heat = heat
-        self.last_heat_max = float(np.max(heat)) if heat is not None else 0.0
+        max_primary = float(np.max(heat)) if heat is not None else 0.0
         elim_scores, _ = self._compute_elimination_scores(restrict_to_hits=False)
-        heat_norm = heat / max(1e-6, self.last_heat_max)
-        w_prob, w_elim = 0.6, 0.4
-        blended = (w_prob * heat_norm) + (w_elim * elim_scores)
+        heat_norm = heat / max(1e-6, max_primary)
+        hist_norm = self._hist_heat_norm_masked()
+        rand = np.random.random((g, g)).astype(np.float32) * (self.state == UNKNOWN).astype(np.float32)
+        w_prob = 0.55
+        w_elim = 0.35
+        w_hist = PERSISTENT_HIT_HEAT_WEIGHT_HUNT if USE_PERSISTENT_HIT_HEAT else 0.0
+        w_rand = RANDOM_NOISE_WEIGHT
+        blended_det = (w_prob * heat_norm) + (w_elim * elim_scores) + (w_hist * hist_norm)
+        blended = blended_det + (w_rand * rand)
+        # Cache blended for overlay (deterministic portion only to avoid flicker)
+        self.last_heat = blended_det
+        self.last_heat_max = float(np.max(self.last_heat))
         r_b, c_b, score_b = self._pick_max_unknown(blended)
         r_h, c_h, _ = self._pick_max_unknown(heat)
         self.last_used_elimination = (r_b != r_h or c_b != c_h)
-        self.last_reason = "Hunt mode: blended heat + elimination" + (" [Elimination-driven]" if self.last_used_elimination else "")
+        reason_bits = ["Hunt mode"]
+        reason_bits.append("heat")
+        reason_bits.append("elim")
+        if USE_PERSISTENT_HIT_HEAT:
+            reason_bits.append("hist")
+        reason_bits.append("rand")
+        self.last_reason = ": ".join([reason_bits[0], " + ".join(reason_bits[1:])]) + (" [Elimination-driven]" if self.last_used_elimination else "")
         return (r_b, c_b, float(score_b), self.last_reason)
 
     # -------------------- Line-ship probability heatmap --------------------
@@ -1453,6 +1543,15 @@ def _update_game_armed(in_game_active):
             return
         _game_armed = True
         print("[Game] Armed: start buttons clicked and In-Game detected after initial wait. Bot can act on its turn.")
+        # Refresh persistent heatmap at the start of each game so we use latest data
+        try:
+            if 'grid_tracker' in globals() and USE_PERSISTENT_HIT_HEAT:
+                grid_tracker.load_persistent_hit_heatmap()
+        except Exception as _e:
+            try:
+                print(f"[Heatmap] Reload at game start failed: {_e}")
+            except Exception:
+                pass
 
 def _is_game_armed():
     return _game_armed
