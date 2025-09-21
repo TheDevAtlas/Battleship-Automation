@@ -139,6 +139,8 @@ PERSISTENT_HIT_HEAT_WEIGHT_HUNT = 0.5
 PERSISTENT_HIT_HEAT_WEIGHT_TARGET = 0.05
 # Small random noise to diversify choices / break ties
 RANDOM_NOISE_WEIGHT = 0.02
+# Only use the persistent hit heatmap for the first N moves of a game
+PERSISTENT_HIT_HEAT_USE_FIRST_N_MOVES = 7
 
 def _ensure_heatmap_initialized(size: int = 10):
     try:
@@ -358,6 +360,18 @@ class GridTracker:
             except Exception:
                 pass
 
+    def _persistent_heat_allowed(self) -> bool:
+        """Return True if we should include the persistent hit heatmap right now.
+        Only allow it for the first N moves of the current game.
+        """
+        try:
+            if not USE_PERSISTENT_HIT_HEAT:
+                return False
+            mc = globals().get('move_count', 0)
+            return mc < PERSISTENT_HIT_HEAT_USE_FIRST_N_MOVES
+        except Exception:
+            return False
+
     def reset_sunk_tracking(self):
         # Reset all sunk announcement/markers and icon alive baseline
         self._announced_sunk.clear()
@@ -513,7 +527,7 @@ class GridTracker:
     def _hist_heat_norm_masked(self):
         """Return normalized persistent heatmap masked to UNKNOWN cells only."""
         g = self.p.grid_size
-        if (self.hist_heat is None) or (not USE_PERSISTENT_HIT_HEAT):
+        if (self.hist_heat is None) or (not self._persistent_heat_allowed()):
             return np.zeros((g, g), dtype=np.float32)
         arr = self.hist_heat.astype(np.float32).copy()
         m = float(np.max(arr))
@@ -704,7 +718,7 @@ class GridTracker:
                 # Weights
                 w_prob = 0.65
                 w_elim = 0.25
-                w_hist = PERSISTENT_HIT_HEAT_WEIGHT_TARGET if USE_PERSISTENT_HIT_HEAT else 0.0
+                w_hist = PERSISTENT_HIT_HEAT_WEIGHT_TARGET if self._persistent_heat_allowed() else 0.0
                 w_rand = RANDOM_NOISE_WEIGHT
                 blended_det = (w_prob * heat_norm) + (w_elim * elim_scores) + (w_hist * hist_norm)
                 blended = blended_det + (w_rand * rand)
@@ -717,7 +731,7 @@ class GridTracker:
                 reason_bits = ["Target mode"]
                 reason_bits.append("heat")
                 reason_bits.append("elim")
-                if USE_PERSISTENT_HIT_HEAT:
+                if self._persistent_heat_allowed():
                     reason_bits.append("hist")
                 reason_bits.append("rand")
                 if getattr(self, "_last_bias_tiebreak", False):
@@ -748,7 +762,7 @@ class GridTracker:
         rand = np.random.random((g, g)).astype(np.float32) * (self.state == UNKNOWN).astype(np.float32)
         w_prob = 0.55
         w_elim = 0.35
-        w_hist = PERSISTENT_HIT_HEAT_WEIGHT_HUNT if USE_PERSISTENT_HIT_HEAT else 0.0
+        w_hist = PERSISTENT_HIT_HEAT_WEIGHT_HUNT if self._persistent_heat_allowed() else 0.0
         w_rand = RANDOM_NOISE_WEIGHT
         blended_det = (w_prob * heat_norm) + (w_elim * elim_scores) + (w_hist * hist_norm)
         blended = blended_det + (w_rand * rand)
@@ -761,7 +775,7 @@ class GridTracker:
         reason_bits = ["Hunt mode"]
         reason_bits.append("heat")
         reason_bits.append("elim")
-        if USE_PERSISTENT_HIT_HEAT:
+        if self._persistent_heat_allowed():
             reason_bits.append("hist")
         reason_bits.append("rand")
         if getattr(self, "_last_bias_tiebreak", False):
@@ -1127,7 +1141,7 @@ class GridTracker:
         # Use raw persistent heat (not normalized) for deterministic tie-breaks
         bias_arr = None
         try:
-            if USE_PERSISTENT_HIT_HEAT and (self.hist_heat is not None):
+            if self._persistent_heat_allowed() and (self.hist_heat is not None):
                 bias_arr = self.hist_heat
         except Exception:
             bias_arr = None
