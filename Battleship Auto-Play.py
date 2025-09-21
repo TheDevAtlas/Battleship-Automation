@@ -77,6 +77,7 @@ MIN_MOVES_BEFORE_EXIT = 15
 IN_GAME_LOST_GRACE_SEC = 4.0 
 FIRST_INGAME_EXTRA_WAIT_SEC = 4.0
 ENEMY_TURN_CLEAR_WAIT_SEC = 1.2  # Require 4s of no 'Enemy Turn' before first move
+MAX_GAME_DURATION_SEC = 15 * 60  # Kill switch: max allowed duration for a single game
 
 move_count = 0
 last_ingame_seen_ts = 0.0
@@ -328,6 +329,8 @@ class GridTracker:
         # Track when grid was last updated or changed to sync autoplay decisions
         self.last_update_ts = 0.0
         self.last_change_ts = 0.0
+        # Track if bias tie-break influenced the last pick
+        self._last_bias_tiebreak = False
         self._precompute_centers()
         # Ship shapes (lines + T + S6) for placement-based targeting and heatmaps
         self.ship_shapes = self._init_ship_shapes()
@@ -717,6 +720,8 @@ class GridTracker:
                 if USE_PERSISTENT_HIT_HEAT:
                     reason_bits.append("hist")
                 reason_bits.append("rand")
+                if getattr(self, "_last_bias_tiebreak", False):
+                    reason_bits.append("bias-tie")
                 self.last_reason = ": ".join([reason_bits[0], " + ".join(reason_bits[1:])]) + (" [Elimination-driven]" if self.last_used_elimination else "")
                 return (r_b, c_b, float(score_b), self.last_reason)
             # Fallback probe around hits when no valid line placement found
@@ -759,6 +764,8 @@ class GridTracker:
         if USE_PERSISTENT_HIT_HEAT:
             reason_bits.append("hist")
         reason_bits.append("rand")
+        if getattr(self, "_last_bias_tiebreak", False):
+            reason_bits.append("bias-tie")
         self.last_reason = ": ".join([reason_bits[0], " + ".join(reason_bits[1:])]) + (" [Elimination-driven]" if self.last_used_elimination else "")
         return (r_b, c_b, float(score_b), self.last_reason)
 
@@ -1108,15 +1115,41 @@ class GridTracker:
         return heat
 
     def _pick_max_unknown(self, heat):
-        best = (-1.0, None, None)
+        """Pick the UNKNOWN cell with the highest score.
+        Tie-break using persistent hit heatmap (higher bias wins).
+        """
         g = self.p.grid_size
+        best_v = float('-inf')
+        best_bias = float('-inf')
+        best_r = None
+        best_c = None
+        used_bias_tb = False
+        # Use raw persistent heat (not normalized) for deterministic tie-breaks
+        bias_arr = None
+        try:
+            if USE_PERSISTENT_HIT_HEAT and (self.hist_heat is not None):
+                bias_arr = self.hist_heat
+        except Exception:
+            bias_arr = None
+        eps = 1e-9
         for r in range(g):
             for c in range(g):
-                if self.state[r, c] == UNKNOWN:
-                    v = float(heat[r, c])
-                    if v > best[0]:
-                        best = (v, r, c)
-        return best[1], best[2], best[0]
+                if self.state[r, c] != UNKNOWN:
+                    continue
+                v = float(heat[r, c])
+                if v > best_v + eps:
+                    best_v = v
+                    best_r, best_c = r, c
+                    best_bias = float(bias_arr[r, c]) if bias_arr is not None else float('-inf')
+                    used_bias_tb = False
+                elif abs(v - best_v) <= eps:
+                    b = float(bias_arr[r, c]) if bias_arr is not None else float('-inf')
+                    if b > best_bias:
+                        best_r, best_c = r, c
+                        best_bias = b
+                        used_bias_tb = True
+        self._last_bias_tiebreak = used_bias_tb
+        return best_r, best_c, best_v
 
     def render_overlay(self, frame):
         overlay = frame.copy()
@@ -1815,7 +1848,7 @@ def graceful_shutdown(reason=""):
 
 def watchdog_thread():
     """Exit when: enough moves AND 'In Game Marker' has been gone for a while."""
-    global last_ingame_seen_ts, move_count
+    global last_ingame_seen_ts, move_count, first_ingame_seen_ts
     print("Watchdog thread started")
     while not stop_threads.is_set():
         try:
@@ -1827,6 +1860,11 @@ def watchdog_thread():
                 break
 
             now = time.time()
+            # Kill switch: if a single game exceeds MAX_GAME_DURATION_SEC, shutdown
+            if first_ingame_seen_ts is not None and (now - first_ingame_seen_ts) >= MAX_GAME_DURATION_SEC:
+                minutes = int(MAX_GAME_DURATION_SEC // 60)
+                graceful_shutdown(f"Game exceeded {minutes} minutes. Kill switch triggered.")
+                break
             # Only consider exit after we’ve fired enough shots
             if move_count >= MIN_MOVES_BEFORE_EXIT:
                 # If we haven't seen the in-game marker in a while, shut down
