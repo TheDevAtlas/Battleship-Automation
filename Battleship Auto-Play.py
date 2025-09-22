@@ -140,7 +140,7 @@ PERSISTENT_HIT_HEAT_WEIGHT_TARGET = 0.05
 # Small random noise to diversify choices / break ties
 RANDOM_NOISE_WEIGHT = 0.02
 # Only use the persistent hit heatmap for the first N moves of a game
-PERSISTENT_HIT_HEAT_USE_FIRST_N_MOVES = 7
+PERSISTENT_HIT_HEAT_USE_FIRST_N_MOVES = 10
 
 def _ensure_heatmap_initialized(size: int = 10):
     try:
