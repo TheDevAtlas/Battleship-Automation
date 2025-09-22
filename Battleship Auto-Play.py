@@ -63,7 +63,9 @@ TEMPLATES = [
     {"name":"Rewards", "path":r"ScreenElements\Rewards.png",
      "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
     {"name":"Exit Rewards", "path":r"ScreenElements\Exit-X.png",
-     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE}
+     "sqdiff_thresh":0.15, "uniqueness_min":0.01, "color":ORANGE},
+    {"name":"Something Went Wrong", "path":r"ScreenElements\Wrong.png",
+     "sqdiff_thresh":0.20, "uniqueness_min":0.01, "color":ORANGE}
 ]
 
 MIN_MASK_AREA = 500
@@ -712,16 +714,15 @@ class GridTracker:
                 # Normalize primary heat
                 max_primary = float(np.max(heat_t))
                 heat_norm = heat_t / max(1e-6, max_primary)
-                # Persistent history and small random jitter
+                # Persistent history (first N moves)
                 hist_norm = self._hist_heat_norm_masked()
-                rand = np.random.random((g, g)).astype(np.float32) * (self.state == UNKNOWN).astype(np.float32)
                 # Weights
                 w_prob = 0.65
                 w_elim = 0.25
                 w_hist = PERSISTENT_HIT_HEAT_WEIGHT_TARGET if self._persistent_heat_allowed() else 0.0
-                w_rand = RANDOM_NOISE_WEIGHT
                 blended_det = (w_prob * heat_norm) + (w_elim * elim_scores) + (w_hist * hist_norm)
-                blended = blended_det + (w_rand * rand)
+                # Deterministic selection; tie-break uses always-on historical heat
+                blended = blended_det
                 # Cache blended heat for overlay (deterministic portion only to avoid flicker)
                 self.last_heat = blended_det
                 self.last_heat_max = float(np.max(self.last_heat))
@@ -733,7 +734,7 @@ class GridTracker:
                 reason_bits.append("elim")
                 if self._persistent_heat_allowed():
                     reason_bits.append("hist")
-                reason_bits.append("rand")
+                # No random jitter in selection; avoid cycling between ties
                 if getattr(self, "_last_bias_tiebreak", False):
                     reason_bits.append("bias-tie")
                 self.last_reason = ": ".join([reason_bits[0], " + ".join(reason_bits[1:])]) + (" [Elimination-driven]" if self.last_used_elimination else "")
@@ -759,13 +760,12 @@ class GridTracker:
         elim_scores, _ = self._compute_elimination_scores(restrict_to_hits=False)
         heat_norm = heat / max(1e-6, max_primary)
         hist_norm = self._hist_heat_norm_masked()
-        rand = np.random.random((g, g)).astype(np.float32) * (self.state == UNKNOWN).astype(np.float32)
         w_prob = 0.55
         w_elim = 0.35
         w_hist = PERSISTENT_HIT_HEAT_WEIGHT_HUNT if self._persistent_heat_allowed() else 0.0
-        w_rand = RANDOM_NOISE_WEIGHT
         blended_det = (w_prob * heat_norm) + (w_elim * elim_scores) + (w_hist * hist_norm)
-        blended = blended_det + (w_rand * rand)
+        # Deterministic selection; tie-break uses always-on historical heat
+        blended = blended_det
         # Cache blended for overlay (deterministic portion only to avoid flicker)
         self.last_heat = blended_det
         self.last_heat_max = float(np.max(self.last_heat))
@@ -777,7 +777,7 @@ class GridTracker:
         reason_bits.append("elim")
         if self._persistent_heat_allowed():
             reason_bits.append("hist")
-        reason_bits.append("rand")
+        # No random jitter in selection; avoid cycling between ties
         if getattr(self, "_last_bias_tiebreak", False):
             reason_bits.append("bias-tie")
         self.last_reason = ": ".join([reason_bits[0], " + ".join(reason_bits[1:])]) + (" [Elimination-driven]" if self.last_used_elimination else "")
@@ -1130,22 +1130,38 @@ class GridTracker:
 
     def _pick_max_unknown(self, heat):
         """Pick the UNKNOWN cell with the highest score.
-        Tie-break using persistent hit heatmap (higher bias wins).
+        If multiple cells tie on the primary score, break ties by adding
+        a small normalized bonus from the historical hit CSV (always-on).
+        The returned value is the primary heat score (not including tie bonus).
         """
         g = self.p.grid_size
         best_v = float('-inf')
-        best_bias = float('-inf')
         best_r = None
         best_c = None
         used_bias_tb = False
-        # Use raw persistent heat (not normalized) for deterministic tie-breaks
-        bias_arr = None
+
+        # Build normalized historical heat (masked to UNKNOWN) for tie-breaking only
+        hist_norm = None
         try:
-            if self._persistent_heat_allowed() and (self.hist_heat is not None):
-                bias_arr = self.hist_heat
+            if self.hist_heat is not None:
+                arr = self.hist_heat.astype(np.float32)
+                m = float(np.max(arr))
+                if m > 0:
+                    arr = arr / m
+                else:
+                    arr = np.zeros_like(arr, dtype=np.float32)
+                mask = (self.state == UNKNOWN).astype(np.float32)
+                hist_norm = arr * mask
+            else:
+                hist_norm = np.zeros((g, g), dtype=np.float32)
         except Exception:
-            bias_arr = None
+            hist_norm = np.zeros((g, g), dtype=np.float32)
+
+        # Only apply this as a tie bonus; keep primary selection by heat
         eps = 1e-9
+        # Track the best tie-bonus among equal-heat candidates
+        best_tie_bonus = float('-inf')
+
         for r in range(g):
             for c in range(g):
                 if self.state[r, c] != UNKNOWN:
@@ -1154,13 +1170,13 @@ class GridTracker:
                 if v > best_v + eps:
                     best_v = v
                     best_r, best_c = r, c
-                    best_bias = float(bias_arr[r, c]) if bias_arr is not None else float('-inf')
+                    best_tie_bonus = float(hist_norm[r, c])
                     used_bias_tb = False
                 elif abs(v - best_v) <= eps:
-                    b = float(bias_arr[r, c]) if bias_arr is not None else float('-inf')
-                    if b > best_bias:
+                    tie_bonus = float(hist_norm[r, c])
+                    if tie_bonus > best_tie_bonus:
                         best_r, best_c = r, c
-                        best_bias = b
+                        best_tie_bonus = tie_bonus
                         used_bias_tb = True
         self._last_bias_tiebreak = used_bias_tb
         return best_r, best_c, best_v
@@ -1869,6 +1885,20 @@ def watchdog_thread():
             # Immediate exit if opponent disconnect detected
             with matches_lock:
                 matches_snapshot = current_matches.copy()
+            # If the "Something went wrong" screen is detected, confirm after 2s and then exit.
+            try:
+                if any(m.get("name") == "Something Went Wrong" for m in matches_snapshot):
+                    print("[Watchdog] 'Something went wrong' detected. Confirming in 2s...")
+                    confirm_until = time.time() + 2.0
+                    while time.time() < confirm_until and not stop_threads.is_set():
+                        time.sleep(0.1)
+                    with matches_lock:
+                        confirm_snapshot = current_matches.copy()
+                    if any(m.get("name") == "Something Went Wrong" for m in confirm_snapshot):
+                        graceful_shutdown("'Something went wrong' detected and confirmed. Ending run.")
+                        break
+            except Exception as e:
+                print(f"Watchdog confirm-error: {e}")
             if check_enemy_disconnect(matches_snapshot):
                 graceful_shutdown("Opponent disconnected detected.")
                 break
