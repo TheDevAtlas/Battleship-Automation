@@ -1,12 +1,16 @@
 import tkinter as tk
 from tkinter import messagebox
 from game import Game
-from random_player import RandomPlayer
-from random_target_player import RandomTargetPlayer
-from spaced_random_player import SpacedRandomPlayer
 from analysis import analyze_and_save_results
 import time
 import statistics
+import multiprocessing
+from multiprocessing import Pool, Manager, cpu_count
+from functools import partial
+import os
+import glob
+import importlib.util
+import inspect
 
 class BattleshipGUI:
     def __init__(self, num_games):
@@ -75,10 +79,9 @@ class BattleshipGUI:
                                     command=self.next_move, font=("Arial", 12),
                                     bg="#f39c12", fg="white", padx=20, state="disabled")
         self.next_button.pack(side=tk.LEFT, padx=10)
-        
-        # Game state
+          # Game state
         self.game = None
-        self.player = RandomPlayer("Random AI")
+        self.player = None  # Will be set externally
         self.auto_playing = False
         self.games_paused = False
         self.next_move_pos = None  # Track next move position for highlighting
@@ -241,8 +244,7 @@ Average moves: {average_moves:.2f}
         
         messagebox.showinfo("Game Results", result_text)
         print(result_text)  # Also print to console
-        
-        # Reset for new games
+          # Reset for new games
         self.start_button.config(state="normal")
         self.pause_button.config(state="disabled", text="Pause Games", bg="#e67e22")
         self.next_button.config(state="disabled")
@@ -254,23 +256,74 @@ Average moves: {average_moves:.2f}
         """Start the GUI"""
         self.root.mainloop()
 
-def run_simulation_games(num_games: int, player, show_gui: bool = False):
+def play_single_game(game_num, module_name, class_name, player_name):
+    """Worker function to play a single game - designed for multiprocessing"""
+    # Import the module and get the class (fixes pickling issues)
+    spec = importlib.util.spec_from_file_location(module_name, f"{module_name}.py")
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module {module_name}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    player_class = getattr(module, class_name)
+    
+    # Create a new player instance for this process
+    player = player_class(player_name)
+    game = Game(player)
+    result = game.play_game(show_moves=False)
+    return result
+
+def run_simulation_games(num_games: int, player, player_module_name: str, player_class_name: str, show_gui: bool = False):
     """Run multiple games and return statistics"""
     print(f"\nRunning {num_games} games with {player.name}...")
+    
+    # Determine number of processes to use
+    num_processes = max(1, cpu_count() - 1)  # Leave one CPU free
+    print(f"Using {num_processes} parallel processes for faster execution...")
     
     results = []
     
     start_time = time.time()
     
-    for game_num in range(num_games):
-        game = Game(player)
-        result = game.play_game(show_moves=False)
-        results.append(result)
-        
-        # Show progress for large simulations
-        if num_games > 10 and (game_num + 1) % max(1, num_games // 10) == 0:
-            progress = ((game_num + 1) / num_games) * 100
-            print(f"Progress: {progress:.1f}% ({game_num + 1}/{num_games} games)")
+    # Get player info for multiprocessing
+    player_name = player.name
+    
+    # Create a partial function with player info
+    worker_func = partial(play_single_game, module_name=player_module_name, 
+                         class_name=player_class_name, player_name=player_name)
+    
+    # Use multiprocessing pool
+    one_percent = max(1, num_games // 100)
+    
+    with Pool(processes=num_processes) as pool:
+        # Use imap_unordered for better progress tracking
+        for games_completed, result in enumerate(pool.imap_unordered(worker_func, range(num_games)), 1):
+            results.append(result)
+            
+            # Show progress after every 1% of games (minimum 1 game)
+            if games_completed % one_percent == 0 or games_completed == num_games:
+                progress = (games_completed / num_games) * 100
+                elapsed_time = time.time() - start_time
+                
+                # Calculate ETA
+                if games_completed < num_games:
+                    avg_time_per_game = elapsed_time / games_completed
+                    games_remaining = num_games - games_completed
+                    eta_seconds = avg_time_per_game * games_remaining
+                    
+                    # Format ETA nicely
+                    if eta_seconds < 60:
+                        eta_str = f"{eta_seconds:.1f}s"
+                    elif eta_seconds < 3600:
+                        eta_str = f"{eta_seconds / 60:.1f}m"
+                    else:
+                        hours = eta_seconds / 3600
+                        eta_str = f"{hours:.1f}h"
+                    
+                    print(f"Progress: {progress:.0f}% ({games_completed}/{num_games} games) | "
+                          f"Elapsed: {elapsed_time:.1f}s | ETA: {eta_str}")
+                else:
+                    print(f"Progress: {progress:.0f}% ({games_completed}/{num_games} games) | "
+                          f"Total time: {elapsed_time:.1f}s")
     
     end_time = time.time()
     
@@ -317,32 +370,77 @@ def run_simulation_games(num_games: int, player, show_gui: bool = False):
 
 
 
-def get_bot_choice():
+def discover_player_classes():
+    """Dynamically discover all player classes in *player.py files"""
+    player_classes = []
+    player_files = glob.glob("*player.py")
+    
+    for file_path in sorted(player_files):
+        try:
+            # Get module name from file path
+            module_name = os.path.splitext(os.path.basename(file_path))[0]
+            
+            # Load the module dynamically
+            spec = importlib.util.spec_from_file_location(module_name, file_path)
+            if spec is None or spec.loader is None:
+                print(f"Warning: Could not load spec for {file_path}")
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            
+            # Find all classes in the module that look like player classes
+            for name, obj in inspect.getmembers(module, inspect.isclass):
+                # Check if class has required methods (make_move and reset)
+                if (hasattr(obj, 'make_move') and 
+                    hasattr(obj, 'reset') and 
+                    obj.__module__ == module_name):
+                    player_classes.append({
+                        'name': name,
+                        'class': obj,
+                        'module': module_name,
+                        'file': file_path
+                    })
+                    break  # Only take first valid class from each file
+        except Exception as e:
+            print(f"Warning: Could not load player from {file_path}: {e}")
+    
+    return player_classes
+
+def get_bot_choice(player_classes):
     """Get user choice for bot type"""
     print("\nAVAILABLE BOT TYPES:")
-    print("1. Random Player - Makes completely random moves")
-    print("2. Random Target Player - Random hunting, but targets ships when found")
-    print("3. Spaced Random Player - Uses spacing strategy to reduce guesses")
-    print("4. Compare Random vs Random Target - Run first two bots and compare")
-    print("5. Compare All Three Bots - Run all bots and compare performance")
+    
+    # Display individual player options
+    for i, player_info in enumerate(player_classes, 1):
+        # Create a temp instance to get the default name
+        try:
+            temp_instance = player_info['class']()
+            display_name = temp_instance.name
+        except:
+            display_name = player_info['name']
+        print(f"{i}. {display_name} (from {player_info['file']})")
+    
+    # Add "compare all" option
+    compare_all_option = len(player_classes) + 1
+    print(f"{compare_all_option}. Compare All Players - Run all bots and compare performance")
     
     while True:
         try:
-            choice = int(input("\nSelect bot type (1-5): "))
-            if choice in [1, 2, 3, 4, 5]:
+            choice = int(input(f"\nSelect bot type (1-{compare_all_option}): "))
+            if 1 <= choice <= compare_all_option:
                 return choice
             else:
-                print("Please enter 1, 2, 3, 4, or 5")
+                print(f"Please enter a number between 1 and {compare_all_option}")
         except ValueError:
             print("Please enter a valid number")
 
-def get_user_choice():
+def get_user_choice(player_classes):
     """Get user preferences for running the simulation"""
     print("BATTLESHIP AUTOMATION")
     print("=" * 30)
     
     # Get bot choice first
-    bot_choice = get_bot_choice()
+    bot_choice = get_bot_choice(player_classes)
     
     # Ask about number of games
     while True:
@@ -357,7 +455,8 @@ def get_user_choice():
     
     # Ask about GUI (only for single bot, not comparison)
     show_gui = False
-    if bot_choice in [1, 2, 3]:  # Single bot modes only
+    compare_all_option = len(player_classes) + 1
+    if bot_choice != compare_all_option:  # Single bot mode
         while True:
             gui_choice = input("Do you want to run with GUI? (y/n): ").lower().strip()
             if gui_choice in ['y', 'yes']:
@@ -372,91 +471,60 @@ def get_user_choice():
     return bot_choice, show_gui, num_games
 
 def main():
-    bot_choice, show_gui, num_games = get_user_choice()
+    # Discover all player classes
+    player_classes = discover_player_classes()
     
-    # Create bot instances
-    random_player = RandomPlayer("Random Player")
-    target_player = RandomTargetPlayer("Random Target Player")
-    spaced_player = SpacedRandomPlayer("Spaced Random Player")
+    if not player_classes:
+        print("Error: No player classes found! Make sure you have *player.py files in the directory.")
+        return
     
-    if bot_choice == 1:  # Random Player only
+    print(f"Found {len(player_classes)} player classes:")
+    for player_info in player_classes:
+        print(f"  - {player_info['name']} (from {player_info['file']})")
+    
+    bot_choice, show_gui, num_games = get_user_choice(player_classes)
+    
+    compare_all_option = len(player_classes) + 1
+      # Single player mode
+    if bot_choice < compare_all_option:
+        player_info = player_classes[bot_choice - 1]
+        player_instance = player_info['class']()
+        
         if show_gui:
-            print(f"\nStarting GUI mode for {num_games} games with Random Player...")
+            print(f"\nStarting GUI mode for {num_games} games with {player_instance.name}...")
             gui = BattleshipGUI(num_games)
-            gui.player = random_player
+            gui.player = player_instance
             gui.run()
         else:
-            print(f"\nStarting simulation mode with Random Player...")
-            results = run_simulation_games(num_games, random_player, show_gui=False)
+            print(f"\nStarting simulation mode with {player_instance.name}...")
+            results = run_simulation_games(num_games, player_instance, 
+                                          player_info['module'], player_info['name'], 
+                                          show_gui=False)
             analyze_and_save_results([results], "single-bot")
-            
-    elif bot_choice == 2:  # Random Target Player only
-        if show_gui:
-            print(f"\nStarting GUI mode for {num_games} games with Random Target Player...")
-            gui = BattleshipGUI(num_games)
-            gui.player = target_player
-            gui.run()
-        else:
-            print(f"\nStarting simulation mode with Random Target Player...")
-            results = run_simulation_games(num_games, target_player, show_gui=False)
-            analyze_and_save_results([results], "single-bot")
-    
-    elif bot_choice == 3:  # Spaced Random Player only
-        if show_gui:
-            print(f"\nStarting GUI mode for {num_games} games with Spaced Random Player...")
-            gui = BattleshipGUI(num_games)
-            gui.player = spaced_player
-            gui.run()
-        else:
-            print(f"\nStarting simulation mode with Spaced Random Player...")
-            results = run_simulation_games(num_games, spaced_player, show_gui=False)
-            analyze_and_save_results([results], "single-bot")
-            
-    elif bot_choice == 4:  # Compare Random vs Random Target
+      # Compare all players
+    else:
         print(f"\nStarting comparison mode - running {num_games} games with each bot...")
         print("This will run background simulations only (no GUI for comparison mode)")
         
-        # Run Random Player
-        print(f"\n{'='*60}")
-        print("PHASE 1: Testing Random Player")
-        print(f"{'='*60}")
-        results1 = run_simulation_games(num_games, random_player, show_gui=False)
-        
-        # Run Random Target Player
-        print(f"\n{'='*60}")
-        print("PHASE 2: Testing Random Target Player")
-        print(f"{'='*60}")
-        results2 = run_simulation_games(num_games, target_player, show_gui=False)
-        
-        # Analyze and save results
-        analyze_and_save_results([results1, results2], "two-bot-comparison")
-    
-    elif bot_choice == 5:  # Compare all three
-        print(f"\nStarting three-way comparison - running {num_games} games with each bot...")
-        print("This will run background simulations only (no GUI for comparison mode)")
-        
-        # Run Random Player
-        print(f"\n{'='*60}")
-        print("PHASE 1: Testing Random Player")
-        print(f"{'='*60}")
-        results1 = run_simulation_games(num_games, random_player, show_gui=False)
-        
-        # Run Random Target Player
-        print(f"\n{'='*60}")
-        print("PHASE 2: Testing Random Target Player")
-        print(f"{'='*60}")
-        results2 = run_simulation_games(num_games, target_player, show_gui=False)
-        
-        # Run Spaced Random Player
-        print(f"\n{'='*60}")
-        print("PHASE 3: Testing Spaced Random Player")
-        print(f"{'='*60}")
-        results3 = run_simulation_games(num_games, spaced_player, show_gui=False)
+        all_results = []
+        for i, player_info in enumerate(player_classes, 1):
+            player_instance = player_info['class']()
+            
+            print(f"\n{'='*60}")
+            print(f"PHASE {i}: Testing {player_instance.name}")
+            print(f"{'='*60}")
+            
+            results = run_simulation_games(num_games, player_instance, 
+                                          player_info['module'], player_info['name'],
+                                          show_gui=False)
+            all_results.append(results)
         
         # Analyze and save results
-        analyze_and_save_results([results1, results2, results3], "three-bot-comparison")
-        
+        comparison_name = f"{len(player_classes)}-bot-comparison"
+        analyze_and_save_results(all_results, comparison_name)
 
 
 if __name__ == "__main__":
+    # Set multiprocessing start method for Windows compatibility
+    multiprocessing.freeze_support()
     main()

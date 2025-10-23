@@ -43,19 +43,26 @@ class SpacedRandomPlayer:
     def _generate_spaced_grid(self, board: Board, spacing: int) -> List[Tuple[int, int]]:
         """Generate a spaced grid pattern for hunting
         
-        For spacing N, we check positions where (row + col) % N == offset
-        We use different offsets to ensure we cover all possibilities
+        For spacing N, we check positions where (row + col) % N == 0
+        This aligns all checks on diagonals parallel to the main diagonal,
+        ensuring we hit any ship of size N while minimizing overlap.
+        
+        Example for spacing=2 on 10x10 board:
+        X . X . X . X . X .
+        . X . X . X . X . X
+        X . X . X . X . X .
+        (where X marks valid hunt positions)
         """
         valid_moves = board.get_valid_moves()
         spaced_moves = []
         
-        # Try different offset patterns to ensure good coverage
-        for offset in range(spacing):
-            for move in valid_moves:
-                row, col = move
-                if (row + col) % spacing == offset:
-                    if not self._is_adjacent_to_sunk_ship(move):
-                        spaced_moves.append(move)
+        # Use a single offset (0) to align all checks on the same diagonal pattern
+        # This ensures efficient coverage without redundancy
+        for move in valid_moves:
+            row, col = move
+            if (row + col) % spacing == 0:
+                if not self._is_adjacent_to_sunk_ship(move):
+                    spaced_moves.append(move)
         
         # If no spaced moves available (e.g., all adjacent to sunk ships),
         # fall back to any valid move not adjacent to sunk ships

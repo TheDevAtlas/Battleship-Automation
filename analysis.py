@@ -19,8 +19,7 @@ class GameAnalyzer:
         """Generate filename with date and run number"""
         date_str = datetime.now().strftime("%Y-%m-%d")
         return f"{self.data_dir}/{date_str}-{comparison_type}-Run-{run_number}.csv"
-    
-    def save_detailed_results(self, results_list, comparison_type="single", run_number=1):
+      def save_detailed_results(self, results_list, comparison_type="single", run_number=1):
         """Save detailed results to CSV file"""
         filename = self.generate_filename(comparison_type, run_number)
         
@@ -45,9 +44,9 @@ class GameAnalyzer:
             elif len(results_list) == 2:
                 # Two-bot comparison
                 self._write_two_bot_comparison(writer, results_list[0], results_list[1])
-            elif len(results_list) == 3:
-                # Three-bot comparison
-                self._write_three_bot_comparison(writer, results_list[0], results_list[1], results_list[2])
+            elif len(results_list) >= 3:
+                # Multi-bot comparison (3 or more)
+                self._write_multi_bot_comparison(writer, results_list)
         
         print(f"\nDetailed analysis saved to: {filename}")
         return filename
@@ -167,13 +166,14 @@ class GameAnalyzer:
         writer.writerow(['Poor Performance (≥80 moves)', f'{stats1["player_name"]}', f'{stats2["player_name"]}'])
         writer.writerow(['Count', poor1, poor2])
         writer.writerow(['Percentage', f"{(poor1/len(moves1))*100:.1f}%", f"{(poor2/len(moves2))*100:.1f}%"])
-    
-    def _write_three_bot_comparison(self, writer, results1, results2, results3):
-        """Write three-bot comparison data to CSV"""
-        stats = [results1['stats'], results2['stats'], results3['stats']]
+      def _write_multi_bot_comparison(self, writer, results_list):
+        """Write multi-bot comparison data to CSV (works for 3+ bots)"""
+        stats = [result['stats'] for result in results_list]
+        num_bots = len(stats)
         
-        writer.writerow(['# THREE-WAY COMPARISON SUMMARY'])
-        writer.writerow(['Metric', stats[0]['player_name'], stats[1]['player_name'], stats[2]['player_name'], 'Winner'])
+        writer.writerow([f'# {num_bots}-WAY COMPARISON SUMMARY'])
+        header = ['Metric'] + [stat['player_name'] for stat in stats] + ['Winner']
+        writer.writerow(header)
         
         metrics = [
             ('Average Moves', 'average_moves', 'lower'),
@@ -184,7 +184,7 @@ class GameAnalyzer:
             ('Avg Time per Game', 'avg_time_per_game', 'lower')
         ]
         
-        wins = [0, 0, 0]
+        wins = [0] * num_bots
         
         for metric_name, metric_key, better in metrics:
             values = [stat[metric_key] for stat in stats]
@@ -204,12 +204,13 @@ class GameAnalyzer:
         
         writer.writerow([])
         writer.writerow(['# HEAD-TO-HEAD GAME RESULTS'])
-        writer.writerow(['Game Number', stats[0]['player_name'], stats[1]['player_name'], stats[2]['player_name'], 'Winner'])
+        game_header = ['Game Number'] + [stat['player_name'] for stat in stats] + ['Winner']
+        writer.writerow(game_header)
         
         moves = [stat['move_counts'] for stat in stats]
         
         for i in range(len(moves[0])):
-            game_moves = [moves[j][i] for j in range(3)]
+            game_moves = [moves[j][i] for j in range(num_bots)]
             min_moves = min(game_moves)
             winners = [j for j, m in enumerate(game_moves) if m == min_moves]
             
@@ -224,9 +225,9 @@ class GameAnalyzer:
         writer.writerow([])
         writer.writerow(['# WIN STATISTICS'])
         
-        game_wins = [0, 0, 0]
+        game_wins = [0] * num_bots
         for i in range(len(moves[0])):
-            game_moves = [moves[j][i] for j in range(3)]
+            game_moves = [moves[j][i] for j in range(num_bots)]
             min_moves = min(game_moves)
             winners = [j for j, m in enumerate(game_moves) if m == min_moves]
             if len(winners) == 1:
@@ -240,20 +241,29 @@ class GameAnalyzer:
         writer.writerow([])
         writer.writerow(['# HEAD-TO-HEAD WIN RATES'])
         
-        for i in range(3):
-            for j in range(i+1, 3):
+        for i in range(num_bots):
+            for j in range(i+1, num_bots):
                 wins_i = sum(1 for k in range(len(moves[0])) if moves[i][k] < moves[j][k])
                 wins_j = sum(1 for k in range(len(moves[0])) if moves[j][k] < moves[i][k])
                 writer.writerow([f'{stats[i]["player_name"]} vs {stats[j]["player_name"]}', 
                                f'{wins_i}/{len(moves[0])} ({(wins_i/len(moves[0]))*100:.1f}%)'])
         
-        # Performance improvements
+        # Performance improvements (if we can identify a baseline like Random Player)
         writer.writerow([])
-        writer.writerow(['# PERFORMANCE IMPROVEMENTS vs Random Player'])
-        baseline = stats[0]['average_moves']  # Assuming first is Random Player
-        for i in range(1, 3):
-            improvement = ((baseline - stats[i]['average_moves']) / baseline) * 100
-            writer.writerow([f'{stats[i]["player_name"]} Improvement', f"{improvement:.1f}%"])
+        writer.writerow(['# PERFORMANCE IMPROVEMENTS vs Baseline'])
+        # Try to find Random Player as baseline
+        baseline_idx = 0
+        for i, stat in enumerate(stats):
+            if 'random' in stat['player_name'].lower() and 'target' not in stat['player_name'].lower() and 'spaced' not in stat['player_name'].lower():
+                baseline_idx = i
+                break
+        
+        baseline = stats[baseline_idx]['average_moves']
+        writer.writerow([f'Baseline: {stats[baseline_idx]["player_name"]}', f'{baseline:.2f} avg moves'])
+        for i in range(num_bots):
+            if i != baseline_idx:
+                improvement = ((baseline - stats[i]['average_moves']) / baseline) * 100
+                writer.writerow([f'{stats[i]["player_name"]} Improvement', f"{improvement:.1f}%"])
     
     def print_concise_summary(self, results_list, comparison_type="single"):
         """Print concise summary to terminal"""
