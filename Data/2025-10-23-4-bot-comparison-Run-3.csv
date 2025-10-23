@@ -1,0 +1,139 @@
+# Battleship Game Analysis Results
+# Generated: 2025-10-23 14:35:37
+# Comparison Type: 4-bot-comparison
+
+# 4-WAY COMPARISON SUMMARY
+Metric,Probability Player,Random Player,Random Target Player,Spaced Random Player,Winner
+Average Moves,50.46,95.54,67.83,56.26,Probability Player
+Median Moves,51.00,97.00,66.50,54.00,Probability Player
+Best Game,28,77,33,33,Probability Player
+Worst Game,74,100,98,99,Probability Player
+Consistency (Std Dev),10.02,4.86,16.25,13.49,Random Player
+Avg Time per Game,0.01,0.00,0.00,0.00,Spaced Random Player
+Overall Metric Wins,4,1,0,1,
+
+# HEAD-TO-HEAD GAME RESULTS
+Game Number,Probability Player,Random Player,Random Target Player,Spaced Random Player,Winner
+1,35,99,39,47,Probability Player
+2,40,97,50,57,Probability Player
+3,36,96,39,49,Probability Player
+4,41,99,54,50,Probability Player
+5,47,98,54,51,Probability Player
+6,50,96,90,59,Probability Player
+7,63,100,62,49,Spaced Random Player
+8,48,96,65,49,Probability Player
+9,51,98,55,49,Spaced Random Player
+10,53,99,57,66,Probability Player
+11,50,97,56,50,Tie
+12,64,95,60,63,Random Target Player
+13,65,79,81,94,Probability Player
+14,53,97,67,99,Probability Player
+15,62,100,94,41,Spaced Random Player
+16,69,99,85,87,Probability Player
+17,52,89,42,55,Random Target Player
+18,41,100,58,54,Probability Player
+19,39,98,85,50,Probability Player
+20,39,86,61,49,Probability Player
+21,64,98,49,41,Spaced Random Player
+22,56,94,69,48,Spaced Random Player
+23,53,96,69,81,Probability Player
+24,39,97,61,47,Probability Player
+25,51,97,89,49,Spaced Random Player
+26,39,98,87,50,Probability Player
+27,40,100,69,95,Probability Player
+28,45,99,83,42,Spaced Random Player
+29,61,79,95,60,Spaced Random Player
+30,60,99,37,63,Random Target Player
+31,51,96,53,49,Spaced Random Player
+32,51,97,69,45,Spaced Random Player
+33,44,91,49,61,Probability Player
+34,61,97,85,61,Tie
+35,64,99,92,48,Spaced Random Player
+36,55,94,58,68,Probability Player
+37,52,98,64,47,Spaced Random Player
+38,55,77,59,46,Spaced Random Player
+39,42,96,33,64,Random Target Player
+40,38,96,51,58,Probability Player
+41,60,97,96,62,Probability Player
+42,45,97,98,55,Probability Player
+43,42,95,89,44,Probability Player
+44,56,96,67,57,Probability Player
+45,58,95,87,67,Probability Player
+46,54,100,61,62,Probability Player
+47,51,94,86,91,Probability Player
+48,51,89,88,52,Probability Player
+49,74,99,72,43,Spaced Random Player
+50,52,96,94,53,Probability Player
+51,60,93,81,42,Spaced Random Player
+52,58,97,76,86,Probability Player
+53,61,98,74,60,Spaced Random Player
+54,51,97,66,33,Spaced Random Player
+55,36,92,95,66,Probability Player
+56,49,98,60,50,Probability Player
+57,42,96,80,40,Spaced Random Player
+58,57,99,67,60,Probability Player
+59,56,89,80,50,Spaced Random Player
+60,46,100,87,48,Probability Player
+61,66,91,57,55,Spaced Random Player
+62,36,96,58,58,Probability Player
+63,39,94,86,45,Probability Player
+64,32,89,75,51,Probability Player
+65,44,100,80,44,Tie
+66,40,79,75,90,Probability Player
+67,28,99,43,37,Probability Player
+68,52,99,39,85,Random Target Player
+69,46,99,57,48,Probability Player
+70,59,95,48,54,Random Target Player
+71,52,92,69,45,Spaced Random Player
+72,42,95,43,57,Probability Player
+73,51,97,48,61,Random Target Player
+74,42,99,64,55,Probability Player
+75,41,96,60,45,Probability Player
+76,67,96,66,62,Spaced Random Player
+77,52,97,58,66,Probability Player
+78,44,98,59,59,Probability Player
+79,59,95,58,46,Spaced Random Player
+80,50,96,56,56,Probability Player
+81,35,96,42,63,Probability Player
+82,32,100,52,54,Probability Player
+83,52,98,83,56,Probability Player
+84,69,98,61,61,Tie
+85,33,99,67,38,Probability Player
+86,60,96,46,56,Random Target Player
+87,47,95,79,65,Probability Player
+88,36,86,71,52,Probability Player
+89,65,98,68,63,Spaced Random Player
+90,44,95,79,61,Probability Player
+91,47,100,96,38,Spaced Random Player
+92,62,99,81,61,Spaced Random Player
+93,62,99,52,35,Spaced Random Player
+94,48,97,80,62,Probability Player
+95,45,99,89,52,Probability Player
+96,63,98,66,37,Spaced Random Player
+97,63,82,62,49,Spaced Random Player
+98,46,89,66,73,Probability Player
+99,52,96,83,67,Probability Player
+100,65,99,82,52,Spaced Random Player
+
+# WIN STATISTICS
+Probability Player Game Wins,58
+Probability Player Win Rate,58.0%
+Random Player Game Wins,0
+Random Player Win Rate,0.0%
+Random Target Player Game Wins,8
+Random Target Player Win Rate,8.0%
+Spaced Random Player Game Wins,30
+Spaced Random Player Win Rate,30.0%
+
+# HEAD-TO-HEAD WIN RATES
+Probability Player vs Random Player,100/100 (100.0%)
+Probability Player vs Random Target Player,83/100 (83.0%)
+Probability Player vs Spaced Random Player,63/100 (63.0%)
+Random Player vs Random Target Player,4/100 (4.0%)
+Random Player vs Spaced Random Player,3/100 (3.0%)
+Random Target Player vs Spaced Random Player,29/100 (29.0%)
+
+# PERFORMANCE IMPROVEMENTS vs Probability Player
+Random Player Improvement,-89.3%
+Random Target Player Improvement,-34.4%
+Spaced Random Player Improvement,-11.5%

@@ -19,7 +19,8 @@ class GameAnalyzer:
         """Generate filename with date and run number"""
         date_str = datetime.now().strftime("%Y-%m-%d")
         return f"{self.data_dir}/{date_str}-{comparison_type}-Run-{run_number}.csv"
-      def save_detailed_results(self, results_list, comparison_type="single", run_number=1):
+    
+    def save_detailed_results(self, results_list, comparison_type="single", run_number=1):
         """Save detailed results to CSV file"""
         filename = self.generate_filename(comparison_type, run_number)
         
@@ -44,9 +45,12 @@ class GameAnalyzer:
             elif len(results_list) == 2:
                 # Two-bot comparison
                 self._write_two_bot_comparison(writer, results_list[0], results_list[1])
-            elif len(results_list) >= 3:
-                # Multi-bot comparison (3 or more)
-                self._write_multi_bot_comparison(writer, results_list)
+            elif len(results_list) == 3:
+                # Three-bot comparison
+                self._write_three_bot_comparison(writer, results_list[0], results_list[1], results_list[2])
+            else:
+                # N-bot comparison (4 or more)
+                self._write_n_bot_comparison(writer, results_list)
         
         print(f"\nDetailed analysis saved to: {filename}")
         return filename
@@ -84,7 +88,7 @@ class GameAnalyzer:
             '51-60 moves': len([m for m in move_counts if 51 <= m <= 60]),
             '61-70 moves': len([m for m in move_counts if 61 <= m <= 70]),
             '71-80 moves': len([m for m in move_counts if 71 <= m <= 80]),
-            '81-90 moves': len([m for m in move_counts if 81 <= m <= 90]),
+            '81-90 moves': len([m for m in move_counts if m >= 81]),
             '91+ moves': len([m for m in move_counts if m >= 91])
         }
         
@@ -166,12 +170,102 @@ class GameAnalyzer:
         writer.writerow(['Poor Performance (≥80 moves)', f'{stats1["player_name"]}', f'{stats2["player_name"]}'])
         writer.writerow(['Count', poor1, poor2])
         writer.writerow(['Percentage', f"{(poor1/len(moves1))*100:.1f}%", f"{(poor2/len(moves2))*100:.1f}%"])
-      def _write_multi_bot_comparison(self, writer, results_list):
-        """Write multi-bot comparison data to CSV (works for 3+ bots)"""
+    
+    def _write_three_bot_comparison(self, writer, results1, results2, results3):
+        """Write three-bot comparison data to CSV"""
+        stats = [results1['stats'], results2['stats'], results3['stats']]
+        
+        writer.writerow(['# THREE-WAY COMPARISON SUMMARY'])
+        writer.writerow(['Metric', stats[0]['player_name'], stats[1]['player_name'], stats[2]['player_name'], 'Winner'])
+        
+        metrics = [
+            ('Average Moves', 'average_moves', 'lower'),
+            ('Median Moves', 'median_moves', 'lower'),
+            ('Best Game', 'best_moves', 'lower'),
+            ('Worst Game', 'worst_moves', 'lower'),
+            ('Consistency (Std Dev)', 'std_dev', 'lower'),
+            ('Avg Time per Game', 'avg_time_per_game', 'lower')
+        ]
+        
+        wins = [0, 0, 0]
+        
+        for metric_name, metric_key, better in metrics:
+            values = [stat[metric_key] for stat in stats]
+            
+            if better == 'lower':
+                best_idx = values.index(min(values))
+            else:
+                best_idx = values.index(max(values))
+            
+            wins[best_idx] += 1
+            winner = stats[best_idx]['player_name']
+            
+            formatted_vals = [f"{val:.2f}" if isinstance(val, float) else str(val) for val in values]
+            writer.writerow([metric_name] + formatted_vals + [winner])
+        
+        writer.writerow(['Overall Metric Wins'] + [str(w) for w in wins] + [''])
+        
+        writer.writerow([])
+        writer.writerow(['# HEAD-TO-HEAD GAME RESULTS'])
+        writer.writerow(['Game Number', stats[0]['player_name'], stats[1]['player_name'], stats[2]['player_name'], 'Winner'])
+        
+        moves = [stat['move_counts'] for stat in stats]
+        
+        for i in range(len(moves[0])):
+            game_moves = [moves[j][i] for j in range(3)]
+            min_moves = min(game_moves)
+            winners = [j for j, m in enumerate(game_moves) if m == min_moves]
+            
+            if len(winners) == 1:
+                winner = stats[winners[0]]['player_name']
+            else:
+                winner = 'Tie'
+            
+            writer.writerow([i+1] + game_moves + [winner])
+        
+        # Win statistics
+        writer.writerow([])
+        writer.writerow(['# WIN STATISTICS'])
+        
+        game_wins = [0, 0, 0]
+        for i in range(len(moves[0])):
+            game_moves = [moves[j][i] for j in range(3)]
+            min_moves = min(game_moves)
+            winners = [j for j, m in enumerate(game_moves) if m == min_moves]
+            if len(winners) == 1:
+                game_wins[winners[0]] += 1
+        
+        for i, stat in enumerate(stats):
+            writer.writerow([f'{stat["player_name"]} Game Wins', game_wins[i]])
+            writer.writerow([f'{stat["player_name"]} Win Rate', f"{(game_wins[i]/len(moves[0]))*100:.1f}%"])
+        
+        # Head-to-head comparisons
+        writer.writerow([])
+        writer.writerow(['# HEAD-TO-HEAD WIN RATES'])
+        
+        for i in range(3):
+            for j in range(i+1, 3):
+                wins_i = sum(1 for k in range(len(moves[0])) if moves[i][k] < moves[j][k])
+                wins_j = sum(1 for k in range(len(moves[0])) if moves[j][k] < moves[i][k])
+                writer.writerow([f'{stats[i]["player_name"]} vs {stats[j]["player_name"]}', 
+                               f'{wins_i}/{len(moves[0])} ({(wins_i/len(moves[0]))*100:.1f}%)'])
+        
+        # Performance improvements
+        writer.writerow([])
+        writer.writerow(['# PERFORMANCE IMPROVEMENTS vs Random Player'])
+        baseline = stats[0]['average_moves']  # Assuming first is Random Player
+        for i in range(1, 3):
+            improvement = ((baseline - stats[i]['average_moves']) / baseline) * 100
+            writer.writerow([f'{stats[i]["player_name"]} Improvement', f"{improvement:.1f}%"])
+    
+    def _write_n_bot_comparison(self, writer, results_list):
+        """Write N-bot comparison data to CSV (for 4+ bots)"""
         stats = [result['stats'] for result in results_list]
         num_bots = len(stats)
         
         writer.writerow([f'# {num_bots}-WAY COMPARISON SUMMARY'])
+        
+        # Create header row
         header = ['Metric'] + [stat['player_name'] for stat in stats] + ['Winner']
         writer.writerow(header)
         
@@ -203,9 +297,9 @@ class GameAnalyzer:
         writer.writerow(['Overall Metric Wins'] + [str(w) for w in wins] + [''])
         
         writer.writerow([])
-        writer.writerow(['# HEAD-TO-HEAD GAME RESULTS'])
-        game_header = ['Game Number'] + [stat['player_name'] for stat in stats] + ['Winner']
-        writer.writerow(game_header)
+        writer.writerow([f'# HEAD-TO-HEAD GAME RESULTS'])
+        header = ['Game Number'] + [stat['player_name'] for stat in stats] + ['Winner']
+        writer.writerow(header)
         
         moves = [stat['move_counts'] for stat in stats]
         
@@ -248,22 +342,13 @@ class GameAnalyzer:
                 writer.writerow([f'{stats[i]["player_name"]} vs {stats[j]["player_name"]}', 
                                f'{wins_i}/{len(moves[0])} ({(wins_i/len(moves[0]))*100:.1f}%)'])
         
-        # Performance improvements (if we can identify a baseline like Random Player)
+        # Performance improvements vs baseline (first bot)
         writer.writerow([])
-        writer.writerow(['# PERFORMANCE IMPROVEMENTS vs Baseline'])
-        # Try to find Random Player as baseline
-        baseline_idx = 0
-        for i, stat in enumerate(stats):
-            if 'random' in stat['player_name'].lower() and 'target' not in stat['player_name'].lower() and 'spaced' not in stat['player_name'].lower():
-                baseline_idx = i
-                break
-        
-        baseline = stats[baseline_idx]['average_moves']
-        writer.writerow([f'Baseline: {stats[baseline_idx]["player_name"]}', f'{baseline:.2f} avg moves'])
-        for i in range(num_bots):
-            if i != baseline_idx:
-                improvement = ((baseline - stats[i]['average_moves']) / baseline) * 100
-                writer.writerow([f'{stats[i]["player_name"]} Improvement', f"{improvement:.1f}%"])
+        writer.writerow([f'# PERFORMANCE IMPROVEMENTS vs {stats[0]["player_name"]}'])
+        baseline = stats[0]['average_moves']
+        for i in range(1, num_bots):
+            improvement = ((baseline - stats[i]['average_moves']) / baseline) * 100
+            writer.writerow([f'{stats[i]["player_name"]} Improvement', f"{improvement:.1f}%"])
     
     def print_concise_summary(self, results_list, comparison_type="single"):
         """Print concise summary to terminal"""
@@ -273,6 +358,9 @@ class GameAnalyzer:
             self._print_two_bot_summary(results_list[0], results_list[1])
         elif len(results_list) == 3:
             self._print_three_bot_summary(results_list[0], results_list[1], results_list[2])
+        else:
+            # N-bot comparison (4 or more)
+            self._print_n_bot_summary(results_list)
     
     def _print_single_summary(self, results):
         """Print concise single bot summary"""
@@ -401,6 +489,95 @@ class GameAnalyzer:
             print(f"  {stats[i]['player_name']}: {improvement:.1f}% improvement")
         
         print(f"{'='*100}")
+    
+    def _print_n_bot_summary(self, results_list):
+        """Print concise N-bot comparison summary (for 4+ bots)"""
+        stats = [result['stats'] for result in results_list]
+        num_bots = len(stats)
+        
+        # Calculate column widths
+        name_widths = [len(stat['player_name']) for stat in stats]
+        max_name_width = max(name_widths)
+        col_width = max(max_name_width + 2, 18)
+        
+        total_width = 20 + (col_width * num_bots) + 20
+        
+        print(f"\n{'='*total_width}")
+        print(f"{num_bots}-WAY BATTLESHIP COMPARISON")
+        print(f"{'='*total_width}")
+        
+        # Header row
+        header = f"{'Metric':<20} |"
+        for stat in stats:
+            header += f" {stat['player_name']:<{col_width}} |"
+        header += f" {'Winner':<18}"
+        print(header)
+        print(f"{'-'*total_width}")
+        
+        metrics = [
+            ('Average Moves', 'average_moves'),
+            ('Median Moves', 'median_moves'),
+            ('Best Game', 'best_moves'),
+            ('Worst Game', 'worst_moves'),
+            ('Consistency', 'std_dev')
+        ]
+        
+        wins = [0] * num_bots
+        
+        for metric_name, metric_key in metrics:
+            values = [stat[metric_key] for stat in stats]
+            best_idx = values.index(min(values))
+            wins[best_idx] += 1
+            winner = stats[best_idx]['player_name']
+            
+            row = f"{metric_name:<20} |"
+            for val in values:
+                row += f" {val:<{col_width}.1f} |"
+            row += f" {winner:<18}"
+            print(row)
+        
+        print(f"{'-'*total_width}")
+        
+        # Metric wins
+        row = f"{'Metric Wins':<20} |"
+        for win_count in wins:
+            row += f" {win_count:<{col_width}} |"
+        print(row)
+        
+        # Overall winner
+        max_wins = max(wins)
+        if wins.count(max_wins) == 1:
+            winner_idx = wins.index(max_wins)
+            print(f"\n🏆 OVERALL WINNER: {stats[winner_idx]['player_name']} ({max_wins}/{len(metrics)} metrics)")
+        else:
+            tied_bots = [stats[i]['player_name'] for i, w in enumerate(wins) if w == max_wins]
+            print(f"\n🤝 TIE between {' and '.join(tied_bots)}")
+        
+        # Game win statistics
+        print(f"\nGame-by-Game Win Rates:")
+        moves = [stat['move_counts'] for stat in stats]
+        game_wins = [0] * num_bots
+        
+        for i in range(len(moves[0])):
+            game_moves = [moves[j][i] for j in range(num_bots)]
+            min_moves = min(game_moves)
+            winners = [j for j, m in enumerate(game_moves) if m == min_moves]
+            if len(winners) == 1:
+                game_wins[winners[0]] += 1
+        
+        for i, stat in enumerate(stats):
+            win_rate = (game_wins[i] / len(moves[0])) * 100
+            print(f"  {stat['player_name']}: {game_wins[i]}/{len(moves[0])} games ({win_rate:.1f}%)")
+        
+        # Performance improvements vs baseline (Random Player)
+        baseline = stats[0]['average_moves']
+        print(f"\nPerformance vs {stats[0]['player_name']}:")
+        for i in range(1, num_bots):
+            improvement = ((baseline - stats[i]['average_moves']) / baseline) * 100
+            moves_saved = baseline - stats[i]['average_moves']
+            print(f"  {stats[i]['player_name']}: {improvement:+.1f}% ({moves_saved:+.1f} moves avg)")
+        
+        print(f"{'='*total_width}")
 
 # Global analyzer instance
 analyzer = GameAnalyzer()
