@@ -23,8 +23,7 @@ class GameAnalyzer:
     def save_detailed_results(self, results_list, comparison_type="single", run_number=1):
         """Save detailed results to CSV file"""
         filename = self.generate_filename(comparison_type, run_number)
-        
-        # Check if file exists and increment run number if needed
+          # Check if file exists and increment run number if needed
         counter = run_number
         while os.path.exists(filename):
             counter += 1
@@ -71,12 +70,18 @@ class GameAnalyzer:
         writer.writerow(['Avg Time per Game (s)', f"{stats['avg_time_per_game']:.3f}"])
         writer.writerow([])
         
-        writer.writerow(['# GAME-BY-GAME RESULTS'])
-        writer.writerow(['Game Number', 'Moves Required'])
-        for i, result in enumerate(results['results'], 1):
-            writer.writerow([i, result['moves']])
+        # Only write game-by-game results if we have them (for memory efficiency, large runs don't store them)
+        if results.get('results') and len(results['results']) > 0:
+            writer.writerow(['# GAME-BY-GAME RESULTS'])
+            writer.writerow(['Game Number', 'Moves Required'])
+            for i, result in enumerate(results['results'], 1):
+                writer.writerow([i, result['moves']])
+            writer.writerow([])
+        else:
+            writer.writerow(['# GAME-BY-GAME RESULTS'])
+            writer.writerow(['Note: Individual game results not saved (large dataset - memory optimization)'])
+            writer.writerow([])
         
-        writer.writerow([])
         writer.writerow(['# MOVE COUNT DISTRIBUTION'])
         move_counts = stats['move_counts']
         

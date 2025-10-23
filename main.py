@@ -11,6 +11,7 @@ import os
 import glob
 import importlib.util
 import inspect
+from datetime import datetime
 
 class BattleshipGUI:
     def __init__(self, num_games):
@@ -272,15 +273,115 @@ def play_single_game(game_num, module_name, class_name, player_name):
     result = game.play_game(show_moves=False)
     return result
 
+def run_simulation_games_batch(num_games: int, player, player_module_name: str, player_class_name: str, 
+                               batch_size: int = 10000, show_gui: bool = False):
+    """Run multiple games in batches to avoid memory issues"""
+    print(f"\nRunning {num_games} games with {player.name}...")
+    
+    # Determine batch size based on total games
+    if num_games <= batch_size:
+        # If total games is small, just run normally
+        return run_simulation_games(num_games, player, player_module_name, player_class_name, show_gui)
+    
+    # Calculate number of batches
+    num_batches = (num_games + batch_size - 1) // batch_size
+    print(f"Processing in {num_batches} batches of up to {batch_size} games each...")
+    
+    # Track aggregated statistics across all batches
+    all_move_counts = []
+    total_time = 0
+    best_overall = float('inf')
+    worst_overall = 0
+    
+    overall_start_time = time.time()
+    
+    for batch_num in range(num_batches):
+        batch_start = batch_num * batch_size
+        batch_end = min((batch_num + 1) * batch_size, num_games)
+        batch_games = batch_end - batch_start
+        
+        print(f"\n{'='*60}")
+        print(f"BATCH {batch_num + 1}/{num_batches}: Games {batch_start + 1}-{batch_end}")
+        print(f"{'='*60}")
+        
+        # Run this batch
+        batch_results = run_simulation_games(batch_games, player, player_module_name, 
+                                            player_class_name, show_gui=False)
+        
+        # Extract only the statistics we need (don't keep full results)
+        batch_move_counts = batch_results['stats']['move_counts']
+        all_move_counts.extend(batch_move_counts)
+        
+        total_time += batch_results['stats']['total_time']
+        best_overall = min(best_overall, batch_results['stats']['best_moves'])
+        worst_overall = max(worst_overall, batch_results['stats']['worst_moves'])
+        
+        # Save checkpoint after each batch
+        save_checkpoint(player.name, batch_num + 1, num_batches, all_move_counts, 
+                       best_overall, worst_overall, total_time)
+        
+        # Clear batch results to free memory
+        del batch_results
+        import gc
+        gc.collect()
+        
+        print(f"\nBatch {batch_num + 1} complete. Running totals:")
+        print(f"  Games completed: {len(all_move_counts)}/{num_games}")
+        print(f"  Current average: {sum(all_move_counts) / len(all_move_counts):.2f} moves")
+        print(f"  Best so far: {best_overall} moves")
+        print(f"  Worst so far: {worst_overall} moves")
+    
+    overall_end_time = time.time()
+    
+    # Calculate final statistics
+    average_moves = sum(all_move_counts) / len(all_move_counts)
+    median_moves = statistics.median(all_move_counts)
+    std_dev = statistics.stdev(all_move_counts) if len(all_move_counts) > 1 else 0
+    
+    # Display final results
+    print(f"\n{'='*60}")
+    print(f"FINAL BATTLESHIP SIMULATION RESULTS - {player.name}")
+    print(f"{'='*60}")
+    print(f"Total games played: {num_games}")
+    print(f"Total time: {overall_end_time - overall_start_time:.2f} seconds")
+    print(f"Average time per game: {(overall_end_time - overall_start_time) / num_games:.3f} seconds")
+    print(f"\nMOVE STATISTICS:")
+    print(f"Best game (least moves): {best_overall} moves")
+    print(f"Worst game (most moves): {worst_overall} moves")
+    print(f"Average moves: {average_moves:.2f}")
+    print(f"Median moves: {median_moves:.2f}")
+    print(f"Standard deviation: {std_dev:.2f}")
+    print(f"{'='*60}")
+    
+    return {
+        'results': [],  # Don't store individual results for memory efficiency
+        'stats': {
+            'player_name': player.name,
+            'num_games': num_games,
+            'total_time': overall_end_time - overall_start_time,
+            'avg_time_per_game': (overall_end_time - overall_start_time) / num_games,
+            'best_moves': best_overall,
+            'worst_moves': worst_overall,
+            'average_moves': average_moves,
+            'median_moves': median_moves,
+            'std_dev': std_dev,
+            'move_counts': all_move_counts
+        }
+    }
+
+
 def run_simulation_games(num_games: int, player, player_module_name: str, player_class_name: str, show_gui: bool = False):
-    """Run multiple games and return statistics"""
+    """Run multiple games and return statistics - optimized for memory efficiency"""
     print(f"\nRunning {num_games} games with {player.name}...")
     
     # Determine number of processes to use
     num_processes = max(1, cpu_count() - 1)  # Leave one CPU free
     print(f"Using {num_processes} parallel processes for faster execution...")
     
-    results = []
+    # Only store move counts, not full results, to save memory
+    move_counts = []
+    best_moves = float('inf')
+    worst_moves = 0
     
     start_time = time.time()
     
@@ -297,7 +398,11 @@ def run_simulation_games(num_games: int, player, player_module_name: str, player
     with Pool(processes=num_processes) as pool:
         # Use imap_unordered for better progress tracking
         for games_completed, result in enumerate(pool.imap_unordered(worker_func, range(num_games)), 1):
-            results.append(result)
+            # Only store the move count, not the entire result object
+            moves = result['moves']
+            move_counts.append(moves)
+            best_moves = min(best_moves, moves)
+            worst_moves = max(worst_moves, moves)
             
             # Show progress after every 1% of games (minimum 1 game)
             if games_completed % one_percent == 0 or games_completed == num_games:
@@ -328,9 +433,6 @@ def run_simulation_games(num_games: int, player, player_module_name: str, player
     end_time = time.time()
     
     # Calculate statistics
-    move_counts = [result['moves'] for result in results]
-    best_game = min(results, key=lambda x: x['moves'])
-    worst_game = max(results, key=lambda x: x['moves'])
     average_moves = sum(move_counts) / len(move_counts)
     median_moves = statistics.median(move_counts)
     std_dev = statistics.stdev(move_counts) if len(move_counts) > 1 else 0
@@ -343,28 +445,48 @@ def run_simulation_games(num_games: int, player, player_module_name: str, player
     print(f"Total time: {end_time - start_time:.2f} seconds")
     print(f"Average time per game: {(end_time - start_time) / num_games:.3f} seconds")
     print(f"\nMOVE STATISTICS:")
-    print(f"Best game (least moves): {best_game['moves']} moves")
-    print(f"Worst game (most moves): {worst_game['moves']} moves")
+    print(f"Best game (least moves): {best_moves} moves")
+    print(f"Worst game (most moves): {worst_moves} moves")
     print(f"Average moves: {average_moves:.2f}")
     print(f"Median moves: {median_moves:.2f}")
     print(f"Standard deviation: {std_dev:.2f}")
     print(f"{'='*60}")
     
     return {
-        'results': results,
+        'results': [],  # Don't store individual results for memory efficiency
         'stats': {
             'player_name': player.name,
             'num_games': num_games,
             'total_time': end_time - start_time,
             'avg_time_per_game': (end_time - start_time) / num_games,
-            'best_moves': best_game['moves'],
-            'worst_moves': worst_game['moves'],
+            'best_moves': best_moves,
+            'worst_moves': worst_moves,
             'average_moves': average_moves,
             'median_moves': median_moves,
             'std_dev': std_dev,
             'move_counts': move_counts
         }
     }
+
+
+def save_checkpoint(player_name: str, batch_num: int, total_batches: int, 
+                    move_counts: list, best_moves: float, worst_moves: float, total_time: float):
+    """Save checkpoint data to file for recovery"""
+    checkpoint_dir = "Data/checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    checkpoint_file = f"{checkpoint_dir}/{player_name.replace(' ', '_')}_batch_{batch_num}_of_{total_batches}_{timestamp}.txt"
+    
+    with open(checkpoint_file, 'w') as f:
+        f.write(f"Player: {player_name}\n")
+        f.write(f"Batch: {batch_num}/{total_batches}\n")
+        f.write(f"Games completed: {len(move_counts)}\n")
+        f.write(f"Best moves: {best_moves}\n")
+        f.write(f"Worst moves: {worst_moves}\n")
+        f.write(f"Average moves: {sum(move_counts) / len(move_counts):.2f}\n")
+        f.write(f"Total time: {total_time:.2f}s\n")
+        f.write(f"Timestamp: {timestamp}\n")
 
 
 
@@ -484,8 +606,15 @@ def main():
     
     bot_choice, show_gui, num_games = get_user_choice(player_classes)
     
+    # Determine batch size based on number of games
+    # Use smaller batches for very large runs to manage memory
+    if num_games >= 100000:
+        batch_size = 100000
+    else:
+        batch_size = num_games  # No batching for small runs
+    
     compare_all_option = len(player_classes) + 1
-      # Single player mode
+    # Single player mode
     if bot_choice < compare_all_option:
         player_info = player_classes[bot_choice - 1]
         player_instance = player_info['class']()
@@ -497,11 +626,11 @@ def main():
             gui.run()
         else:
             print(f"\nStarting simulation mode with {player_instance.name}...")
-            results = run_simulation_games(num_games, player_instance, 
+            results = run_simulation_games_batch(num_games, player_instance, 
                                           player_info['module'], player_info['name'], 
-                                          show_gui=False)
+                                          batch_size=batch_size, show_gui=False)
             analyze_and_save_results([results], "single-bot")
-      # Compare all players
+    # Compare all players
     else:
         print(f"\nStarting comparison mode - running {num_games} games with each bot...")
         print("This will run background simulations only (no GUI for comparison mode)")
@@ -514,9 +643,9 @@ def main():
             print(f"PHASE {i}: Testing {player_instance.name}")
             print(f"{'='*60}")
             
-            results = run_simulation_games(num_games, player_instance, 
+            results = run_simulation_games_batch(num_games, player_instance, 
                                           player_info['module'], player_info['name'],
-                                          show_gui=False)
+                                          batch_size=batch_size, show_gui=False)
             all_results.append(results)
         
         # Analyze and save results

@@ -37,141 +37,81 @@ class ProbabilityPlayer:
             return self._hunt_move(board)
     
     def _update_probability_map(self, board: Board):
-        """Generate a probability map based on where ships can fit"""
+        """Generate a probability map based on where ships can fit - OPTIMIZED"""
         self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
         
-        # Get remaining ship sizes
-        remaining_ships = []
-        for i, size in enumerate(self.ship_sizes):
-            if i not in self.sunk_ships:
-                remaining_ships.append(size)
+        # Get remaining ship sizes using list comprehension (faster)
+        remaining_ships = [size for i, size in enumerate(self.ship_sizes) if i not in self.sunk_ships]
         
         if not remaining_ships:
             return
         
+        # Cache board arrays to avoid repeated attribute lookups
+        guesses = board.guesses
+        hits = board.hits
+        sunk_coords = self.sunk_ship_coords
+        
         # For each remaining ship, calculate where it could fit
         for ship_size in remaining_ships:
-            # Try horizontal placements
+            # Try horizontal placements - inlined for speed
             for row in range(self.board_size):
                 for col in range(self.board_size - ship_size + 1):
-                    if self._can_fit_ship_horizontal(board, row, col, ship_size):
-                        # Add probability to all cells this ship would occupy
-                        for c in range(col, col + ship_size):
-                            self.probability_map[row][c] += 1.0
+                    can_fit = True
+                    # Check if ship can fit horizontally
+                    for c in range(col, col + ship_size):
+                        if (guesses[row][c] and not hits[row][c]) or (row, c) in sunk_coords:
+                            can_fit = False
+                            break
+                    
+                    if can_fit:
+                        # Use numpy slice assignment for speed
+                        self.probability_map[row, col:col+ship_size] += 1.0
             
-            # Try vertical placements
+            # Try vertical placements - inlined for speed
             for row in range(self.board_size - ship_size + 1):
                 for col in range(self.board_size):
-                    if self._can_fit_ship_vertical(board, row, col, ship_size):
-                        # Add probability to all cells this ship would occupy
+                    can_fit = True
+                    # Check if ship can fit vertically
+                    for r in range(row, row + ship_size):
+                        if (guesses[r][col] and not hits[r][col]) or (r, col) in sunk_coords:
+                            can_fit = False
+                            break
+                    
+                    if can_fit:
                         for r in range(row, row + ship_size):
-                            self.probability_map[r][col] += 1.0
+                            self.probability_map[r, col] += 1.0
         
-        # Boost probability around known hits that haven't been completed
+        # Boost probability around known hits - inlined for speed
         for row in range(self.board_size):
             for col in range(self.board_size):
-                if board.hits[row][col] and (row, col) not in self.sunk_ship_coords:
-                    # This is a hit that's part of an unsunk ship
+                if hits[row][col] and (row, col) not in sunk_coords:
                     # Boost adjacent cells
-                    self._boost_adjacent_cells(row, col, board, boost_factor=5.0)
+                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        new_row, new_col = row + dr, col + dc
+                        if (0 <= new_row < self.board_size and 0 <= new_col < self.board_size and
+                            not guesses[new_row][new_col]):
+                            self.probability_map[new_row, new_col] += 5.0
         
-        # Zero out already guessed positions
-        for row in range(self.board_size):
-            for col in range(self.board_size):
-                if board.guesses[row][col]:
-                    self.probability_map[row][col] = 0
-    
-    def _can_fit_ship_horizontal(self, board: Board, row: int, col: int, size: int) -> bool:
-        """Check if a ship of given size can fit horizontally at position"""
-        for c in range(col, col + size):
-            # Can't fit if already guessed and was a miss
-            if board.guesses[row][c] and not board.hits[row][c]:
-                return False
-            # Can't fit if it's part of a sunk ship
-            if (row, c) in self.sunk_ship_coords:
-                return False
-        
-        # If there are any hits in this range, make sure they're not part of a sunk ship
-        # and that they could be part of the same ship
-        hits_in_range = []
-        for c in range(col, col + size):
-            if board.hits[row][c]:
-                if (row, c) in self.sunk_ship_coords:
-                    return False
-                hits_in_range.append((row, c))
-        
-        # If there are hits, they should all be in the same row (which they are by construction)
-        # and not separated by misses
-        if len(hits_in_range) > 0:
-            for c in range(col, col + size):
-                if board.guesses[row][c] and not board.hits[row][c]:
-                    # There's a miss in this range, can't fit
-                    return False
-        
-        return True
-    
-    def _can_fit_ship_vertical(self, board: Board, row: int, col: int, size: int) -> bool:
-        """Check if a ship of given size can fit vertically at position"""
-        for r in range(row, row + size):
-            # Can't fit if already guessed and was a miss
-            if board.guesses[r][col] and not board.hits[r][col]:
-                return False
-            # Can't fit if it's part of a sunk ship
-            if (r, col) in self.sunk_ship_coords:
-                return False
-        
-        # If there are any hits in this range, make sure they're not part of a sunk ship
-        hits_in_range = []
-        for r in range(row, row + size):
-            if board.hits[r][col]:
-                if (r, col) in self.sunk_ship_coords:
-                    return False
-                hits_in_range.append((r, col))
-        
-        # If there are hits, check no misses separate them
-        if len(hits_in_range) > 0:
-            for r in range(row, row + size):
-                if board.guesses[r][col] and not board.hits[r][col]:
-                    return False
-        
-        return True
-    
-    def _boost_adjacent_cells(self, row: int, col: int, board: Board, boost_factor: float = 5.0):
-        """Boost probability of cells adjacent to a known hit"""
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]  # right, left, down, up
-        
-        for dr, dc in directions:
-            new_row, new_col = row + dr, col + dc
-            if (0 <= new_row < self.board_size and 0 <= new_col < self.board_size and
-                not board.guesses[new_row][new_col]):
-                self.probability_map[new_row][new_col] += boost_factor
+        # Zero out already guessed positions using numpy boolean indexing
+        guessed_mask = np.array(guesses, dtype=bool)
+        self.probability_map[guessed_mask] = 0
     
     def _get_smallest_remaining_ship(self) -> int:
         """Get the size of the smallest ship that hasn't been sunk yet"""
-        remaining_sizes = []
-        for i, size in enumerate(self.ship_sizes):
-            if i not in self.sunk_ships:
-                remaining_sizes.append(size)
-        
+        remaining_sizes = [size for i, size in enumerate(self.ship_sizes) if i not in self.sunk_ships]
         return min(remaining_sizes) if remaining_sizes else 2
     
     def _generate_spaced_candidates(self, board: Board, spacing: int) -> List[Tuple[int, int]]:
         """Generate spaced grid candidates for efficient hunting"""
         valid_moves = board.get_valid_moves()
-        spaced_moves = []
         
-        # Use spacing pattern to reduce search space
-        for move in valid_moves:
-            row, col = move
-            if (row + col) % spacing == 0:
-                if not self._is_adjacent_to_sunk_ship(move):
-                    spaced_moves.append(move)
+        # Use list comprehension for speed
+        spaced_moves = [move for move in valid_moves 
+                        if (move[0] + move[1]) % spacing == 0 and not self._is_adjacent_to_sunk_ship(move)]
         
         # Fallback if no spaced moves available
         if not spaced_moves:
-            for move in valid_moves:
-                if not self._is_adjacent_to_sunk_ship(move):
-                    spaced_moves.append(move)
+            spaced_moves = [move for move in valid_moves if not self._is_adjacent_to_sunk_ship(move)]
         
         if not spaced_moves:
             spaced_moves = valid_moves
@@ -198,7 +138,7 @@ class ProbabilityPlayer:
         
         for move in spaced_candidates:
             row, col = move
-            prob = self.probability_map[row][col]
+            prob = self.probability_map[row, col]
             if prob > best_prob:
                 best_prob = prob
                 best_move = move
@@ -208,12 +148,9 @@ class ProbabilityPlayer:
             best_move = random.choice(spaced_candidates)
         else:
             # Add some randomness: choose from top 20% of moves
-            high_prob_moves = []
-            threshold = best_prob * 0.8  # Within 80% of best probability
-            for move in spaced_candidates:
-                row, col = move
-                if self.probability_map[row][col] >= threshold:
-                    high_prob_moves.append(move)
+            threshold = best_prob * 0.8
+            high_prob_moves = [move for move in spaced_candidates 
+                              if self.probability_map[move[0], move[1]] >= threshold]
             
             if high_prob_moves:
                 best_move = random.choice(high_prob_moves)
@@ -247,7 +184,7 @@ class ProbabilityPlayer:
             if board.guesses[row][col]:
                 continue  # Skip already guessed positions
             
-            prob = self.probability_map[row][col]
+            prob = self.probability_map[row, col]
             if prob > best_prob:
                 best_prob = prob
                 best_target = target
@@ -380,12 +317,15 @@ class ProbabilityPlayer:
     def _is_adjacent_to_sunk_ship(self, coord: Tuple[int, int]) -> bool:
         """Check if a coordinate is adjacent to any sunk ship"""
         row, col = coord
-        directions = [(0, 1), (0, -1), (1, 0), (-1, 0), (1, 1), (1, -1), (-1, 1), (-1, -1)]
         
-        for dr, dc in directions:
-            adj_row, adj_col = row + dr, col + dc
-            if (adj_row, adj_col) in self.sunk_ship_coords:
-                return True
+        # Check all 8 directions efficiently
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                adj_row, adj_col = row + dr, col + dc
+                if (adj_row, adj_col) in self.sunk_ship_coords:
+                    return True
         return False
     
     def reset(self):
