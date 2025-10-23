@@ -388,6 +388,7 @@ def main():
         else:
             print(f"\nStarting simulation mode with Random Player...")
             results = run_simulation_games(num_games, random_player, show_gui=False)
+            analyze_and_save_results([results], "single-bot")
             
     elif bot_choice == 2:  # Random Target Player only
         if show_gui:
@@ -398,6 +399,7 @@ def main():
         else:
             print(f"\nStarting simulation mode with Random Target Player...")
             results = run_simulation_games(num_games, target_player, show_gui=False)
+            analyze_and_save_results([results], "single-bot")
     
     elif bot_choice == 3:  # Spaced Random Player only
         if show_gui:
@@ -408,6 +410,7 @@ def main():
         else:
             print(f"\nStarting simulation mode with Spaced Random Player...")
             results = run_simulation_games(num_games, spaced_player, show_gui=False)
+            analyze_and_save_results([results], "single-bot")
             
     elif bot_choice == 4:  # Compare Random vs Random Target
         print(f"\nStarting comparison mode - running {num_games} games with each bot...")
@@ -425,67 +428,8 @@ def main():
         print(f"{'='*60}")
         results2 = run_simulation_games(num_games, target_player, show_gui=False)
         
-        # Compare results
-        compare_bot_performance(results1, results2)
-        
-        # Additional detailed comparison
-        print(f"\n{'='*60}")
-        print("DETAILED COMPARISON")  
-        print(f"{'='*60}")
-        
-        # Move distribution comparison
-        moves1 = results1['stats']['move_counts']
-        moves2 = results2['stats']['move_counts']
-        
-        print(f"\nMove Distribution Analysis:")
-        print(f"Random Player:")
-        print(f"  Min: {min(moves1)}, Max: {max(moves1)}, Range: {max(moves1) - min(moves1)}")
-        print(f"Random Target Player:")
-        print(f"  Min: {min(moves2)}, Max: {max(moves2)}, Range: {max(moves2) - min(moves2)}")
-        
-        # Games where each bot performed better
-        better_games = 0
-        for i in range(len(moves1)):
-            if moves2[i] < moves1[i]:
-                better_games += 1
-        
-        print(f"\nGame-by-game comparison:")
-        print(f"Random Target Player won {better_games}/{num_games} games ({(better_games/num_games)*100:.1f}%)")
-        print(f"Random Player won {num_games - better_games}/{num_games} games ({((num_games - better_games)/num_games)*100:.1f}%)")
-        
-        # Efficiency ranges
-        print(f"\nEfficiency Analysis:")
-        efficient_games1 = len([m for m in moves1 if m <= 50])  # Games finished in 50 or fewer moves
-        efficient_games2 = len([m for m in moves2 if m <= 50])
-        
-        print(f"Games finished in ≤50 moves:")
-        print(f"  Random Player: {efficient_games1}/{num_games} ({(efficient_games1/num_games)*100:.1f}%)")
-        print(f"  Random Target Player: {efficient_games2}/{num_games} ({(efficient_games2/num_games)*100:.1f}%)")
-        
-        poor_games1 = len([m for m in moves1 if m >= 80])  # Games that took 80+ moves
-        poor_games2 = len([m for m in moves2 if m >= 80])
-        
-        print(f"Games requiring ≥80 moves:")
-        print(f"  Random Player: {poor_games1}/{num_games} ({(poor_games1/num_games)*100:.1f}%)")
-        print(f"  Random Target Player: {poor_games2}/{num_games} ({(poor_games2/num_games)*100:.1f}%)")
-        
-        print(f"\n{'='*60}")
-        print("CONCLUSION")
-        print(f"{'='*60}")
-        
-        avg_improvement = ((results1['stats']['average_moves'] - results2['stats']['average_moves']) / results1['stats']['average_moves']) * 100
-        if avg_improvement > 5:
-            print(f"Random Target Player shows significant improvement ({avg_improvement:.1f}% better)")
-            print("The targeting strategy effectively reduces average game length.")
-        elif avg_improvement > 0:
-            print(f"Random Target Player shows modest improvement ({avg_improvement:.1f}% better)")
-            print("The targeting strategy provides some benefit over pure random moves.")
-        elif avg_improvement < -5:
-            print(f"Random Player surprisingly performs better ({abs(avg_improvement):.1f}% better)")
-            print("The random strategy may be avoiding some inefficiencies in the targeting approach.")
-        else:
-            print("Both strategies perform similarly on average.")
-            print("The sample size may need to be increased to see significant differences.")
+        # Analyze and save results
+        analyze_and_save_results([results1, results2], "two-bot-comparison")
     
     elif bot_choice == 5:  # Compare all three
         print(f"\nStarting three-way comparison - running {num_games} games with each bot...")
@@ -509,98 +453,8 @@ def main():
         print(f"{'='*60}")
         results3 = run_simulation_games(num_games, spaced_player, show_gui=False)
         
-        # Compare all three
-        wins = compare_three_bots_performance(results1, results2, results3)
-        
-        # Three-bot specific analysis
-        moves1 = results1['stats']['move_counts']
-        moves2 = results2['stats']['move_counts']
-        moves3 = results3['stats']['move_counts']
-        
-        print(f"\n{'='*80}")
-        print("THREE-WAY DETAILED COMPARISON")
-        print(f"{'='*80}")
-        
-        print(f"\nMove Distribution Analysis:")
-        print(f"Random Player:")
-        print(f"  Min: {min(moves1)}, Max: {max(moves1)}, Range: {max(moves1) - min(moves1)}")
-        print(f"Random Target Player:")
-        print(f"  Min: {min(moves2)}, Max: {max(moves2)}, Range: {max(moves2) - min(moves2)}")
-        print(f"Spaced Random Player:")
-        print(f"  Min: {min(moves3)}, Max: {max(moves3)}, Range: {max(moves3) - min(moves3)}")
-        
-        # Head-to-head win rates
-        wins_rt_vs_r = sum(1 for i in range(len(moves1)) if moves2[i] < moves1[i])
-        wins_sr_vs_r = sum(1 for i in range(len(moves1)) if moves3[i] < moves1[i])
-        wins_sr_vs_rt = sum(1 for i in range(len(moves2)) if moves3[i] < moves2[i])
-        
-        print(f"\nHead-to-Head Game Wins:")
-        print(f"Random Target vs Random: {wins_rt_vs_r}/{num_games} ({(wins_rt_vs_r/num_games)*100:.1f}%)")
-        print(f"Spaced Random vs Random: {wins_sr_vs_r}/{num_games} ({(wins_sr_vs_r/num_games)*100:.1f}%)")
-        print(f"Spaced Random vs Random Target: {wins_sr_vs_rt}/{num_games} ({(wins_sr_vs_rt/num_games)*100:.1f}%)")
-        
-        # Efficiency analysis
-        print(f"\nEfficiency Analysis (Games ≤50 moves):")
-        efficient_games1 = len([m for m in moves1 if m <= 50])
-        efficient_games2 = len([m for m in moves2 if m <= 50])
-        efficient_games3 = len([m for m in moves3 if m <= 50])
-        
-        print(f"  Random Player: {efficient_games1}/{num_games} ({(efficient_games1/num_games)*100:.1f}%)")
-        print(f"  Random Target Player: {efficient_games2}/{num_games} ({(efficient_games2/num_games)*100:.1f}%)")
-        print(f"  Spaced Random Player: {efficient_games3}/{num_games} ({(efficient_games3/num_games)*100:.1f}%)")
-        
-        print(f"\nPoor Performance Analysis (Games ≥80 moves):")
-        poor_games1 = len([m for m in moves1 if m >= 80])
-        poor_games2 = len([m for m in moves2 if m >= 80])
-        poor_games3 = len([m for m in moves3 if m >= 80])
-        
-        print(f"  Random Player: {poor_games1}/{num_games} ({(poor_games1/num_games)*100:.1f}%)")
-        print(f"  Random Target Player: {poor_games2}/{num_games} ({(poor_games2/num_games)*100:.1f}%)")
-        print(f"  Spaced Random Player: {poor_games3}/{num_games} ({(poor_games3/num_games)*100:.1f}%)")
-        
-        print(f"\n{'='*80}")
-        print("STRATEGY INSIGHTS")
-        print(f"{'='*80}")
-        
-        print(f"\nSPACED RANDOM STRATEGY ANALYSIS:")
-        print(f"The Spaced Random Player uses a grid-spacing strategy where:")
-        print(f"- For remaining ships of size N, it checks every Nth square")
-        print(f"- This guarantees finding any ship while reducing search space")
-        print(f"- Size 5 ship: 80% search space reduction")
-        print(f"- Size 4 ship: 75% search space reduction") 
-        print(f"- Size 3 ship: 67% search space reduction")
-        print(f"- Size 2 ship: 50% search space reduction")
-        print(f"\nTheoretical maximum guesses needed (spaced strategy):")
-        print(f"- Size 5: 20 guesses (every 5th square)")
-        print(f"- Size 4: 25 guesses (every 4th square)")  
-        print(f"- Size 3: 34 guesses (every 3rd square)")
-        print(f"- Size 2: 50 guesses (every 2nd square)")
-        print(f"- Total theoretical minimum: ~35-40 moves with perfect spacing")
-        
-        print(f"\n{'='*80}")
-        print("FINAL CONCLUSIONS")
-        print(f"{'='*80}")
-        
-        # Compare improvements
-        rt_improvement = ((results1['stats']['average_moves'] - results2['stats']['average_moves']) / results1['stats']['average_moves']) * 100
-        sr_improvement = ((results1['stats']['average_moves'] - results3['stats']['average_moves']) / results1['stats']['average_moves']) * 100
-        sr_vs_rt_improvement = ((results2['stats']['average_moves'] - results3['stats']['average_moves']) / results2['stats']['average_moves']) * 100
-        
-        print(f"\nPerformance Improvements vs Random Player:")
-        print(f"  Random Target Player: {rt_improvement:.1f}% improvement")
-        print(f"  Spaced Random Player: {sr_improvement:.1f}% improvement")
-        print(f"\nSpaced Random vs Random Target:")
-        print(f"  Additional improvement: {sr_vs_rt_improvement:.1f}%")
-        
-        if sr_improvement > rt_improvement:
-            print(f"\n✓ Spaced Random strategy shows superior performance")
-            print(f"  The spacing approach provides {abs(sr_improvement - rt_improvement):.1f}% better results than targeting alone")
-        elif rt_improvement > sr_improvement:
-            print(f"\n✓ Random Target strategy shows superior performance")
-            print(f"  The targeting approach provides {abs(rt_improvement - sr_improvement):.1f}% better results than spacing alone")
-        else:
-            print(f"\n≈ Both advanced strategies perform similarly")
-            print(f"  Sample size may need to be increased to distinguish performance")
+        # Analyze and save results
+        analyze_and_save_results([results1, results2, results3], "three-bot-comparison")
         
 
 

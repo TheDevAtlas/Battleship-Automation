@@ -1,0 +1,133 @@
+# Battleship Game Analysis Results
+# Generated: 2025-10-23 12:19:09
+# Comparison Type: three-bot-comparison
+
+# THREE-WAY COMPARISON SUMMARY
+Metric,Random Player,Random Target Player,Spaced Random Player,Winner
+Average Moves,95.21,66.16,64.10,Spaced Random Player
+Median Moves,96.00,65.50,64.00,Spaced Random Player
+Best Game,79,38,33,Spaced Random Player
+Worst Game,100,100,100,Random Player
+Consistency (Std Dev),4.51,16.09,14.83,Random Player
+Avg Time per Game,0.00,0.00,0.00,Random Player
+Overall Metric Wins,3,0,3,
+
+# HEAD-TO-HEAD GAME RESULTS
+Game Number,Random Player,Random Target Player,Spaced Random Player,Winner
+1,99,81,57,Spaced Random Player
+2,100,41,67,Random Target Player
+3,95,83,42,Spaced Random Player
+4,96,47,69,Random Target Player
+5,100,85,77,Spaced Random Player
+6,92,79,62,Spaced Random Player
+7,96,69,42,Spaced Random Player
+8,94,57,54,Spaced Random Player
+9,95,49,81,Random Target Player
+10,85,65,100,Random Target Player
+11,98,63,56,Spaced Random Player
+12,95,99,68,Spaced Random Player
+13,96,57,68,Random Target Player
+14,98,80,100,Random Target Player
+15,79,81,74,Spaced Random Player
+16,94,66,94,Random Target Player
+17,95,79,67,Spaced Random Player
+18,96,98,98,Random Player
+19,96,66,49,Spaced Random Player
+20,93,66,99,Random Target Player
+21,93,39,54,Random Target Player
+22,97,73,52,Spaced Random Player
+23,100,100,60,Spaced Random Player
+24,99,69,41,Spaced Random Player
+25,99,60,72,Random Target Player
+26,97,70,67,Spaced Random Player
+27,98,52,38,Spaced Random Player
+28,100,76,42,Spaced Random Player
+29,97,51,74,Random Target Player
+30,91,63,78,Random Target Player
+31,87,72,62,Spaced Random Player
+32,93,46,62,Random Target Player
+33,98,38,55,Random Target Player
+34,98,58,63,Random Target Player
+35,94,58,46,Spaced Random Player
+36,92,66,94,Random Target Player
+37,100,59,52,Spaced Random Player
+38,93,93,68,Spaced Random Player
+39,100,87,67,Spaced Random Player
+40,94,59,57,Spaced Random Player
+41,98,76,40,Spaced Random Player
+42,98,45,69,Random Target Player
+43,93,51,78,Random Target Player
+44,92,74,54,Spaced Random Player
+45,92,51,77,Random Target Player
+46,87,64,64,Tie
+47,93,65,86,Random Target Player
+48,99,49,49,Tie
+49,99,63,67,Random Target Player
+50,98,92,77,Spaced Random Player
+51,93,99,54,Spaced Random Player
+52,89,70,67,Spaced Random Player
+53,96,49,61,Random Target Player
+54,96,67,60,Spaced Random Player
+55,97,82,59,Spaced Random Player
+56,99,67,58,Spaced Random Player
+57,94,62,59,Spaced Random Player
+58,93,71,66,Spaced Random Player
+59,98,43,64,Random Target Player
+60,98,75,64,Spaced Random Player
+61,95,83,69,Spaced Random Player
+62,91,61,41,Spaced Random Player
+63,100,90,93,Random Target Player
+64,79,52,44,Spaced Random Player
+65,97,66,67,Random Target Player
+66,98,94,33,Spaced Random Player
+67,85,73,82,Random Target Player
+68,99,97,62,Spaced Random Player
+69,98,79,54,Spaced Random Player
+70,88,39,49,Random Target Player
+71,93,47,50,Random Target Player
+72,100,80,64,Spaced Random Player
+73,98,44,64,Random Target Player
+74,96,38,68,Random Target Player
+75,82,39,44,Random Target Player
+76,97,80,74,Spaced Random Player
+77,100,70,69,Spaced Random Player
+78,99,54,72,Random Target Player
+79,96,91,91,Tie
+80,100,58,49,Spaced Random Player
+81,95,46,96,Random Target Player
+82,100,53,63,Random Target Player
+83,99,69,58,Spaced Random Player
+84,89,53,66,Random Target Player
+85,100,65,80,Random Target Player
+86,98,57,72,Random Target Player
+87,97,65,49,Spaced Random Player
+88,95,55,62,Random Target Player
+89,98,56,61,Random Target Player
+90,94,78,53,Spaced Random Player
+91,99,59,74,Random Target Player
+92,97,94,57,Spaced Random Player
+93,92,52,52,Tie
+94,95,57,67,Random Target Player
+95,96,73,63,Spaced Random Player
+96,100,69,64,Spaced Random Player
+97,88,93,71,Spaced Random Player
+98,95,70,42,Spaced Random Player
+99,89,52,65,Random Target Player
+100,100,50,55,Random Target Player
+
+# WIN STATISTICS
+Random Player Game Wins,1
+Random Player Win Rate,1.0%
+Random Target Player Game Wins,43
+Random Target Player Win Rate,43.0%
+Spaced Random Player Game Wins,52
+Spaced Random Player Win Rate,52.0%
+
+# HEAD-TO-HEAD WIN RATES
+Random Player vs Random Target Player,5/100 (5.0%)
+Random Player vs Spaced Random Player,6/100 (6.0%)
+Random Target Player vs Spaced Random Player,43/100 (43.0%)
+
+# PERFORMANCE IMPROVEMENTS vs Random Player
+Random Target Player Improvement,30.5%
+Spaced Random Player Improvement,32.7%
