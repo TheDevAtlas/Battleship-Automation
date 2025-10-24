@@ -12,6 +12,7 @@ import glob
 import importlib.util
 import inspect
 from datetime import datetime
+from tqdm import tqdm
 
 class BattleshipGUI:
     def __init__(self, num_games):
@@ -286,8 +287,7 @@ def run_simulation_games_batch(num_games: int, player, player_module_name: str, 
     # Calculate number of batches
     num_batches = (num_games + batch_size - 1) // batch_size
     print(f"Processing in {num_batches} batches of up to {batch_size} games each...")
-    
-    # Track aggregated statistics across all batches
+      # Track aggregated statistics across all batches
     all_move_counts = []
     total_time = 0
     best_overall = float('inf')
@@ -300,9 +300,7 @@ def run_simulation_games_batch(num_games: int, player, player_module_name: str, 
         batch_end = min((batch_num + 1) * batch_size, num_games)
         batch_games = batch_end - batch_start
         
-        print(f"\n{'='*60}")
-        print(f"BATCH {batch_num + 1}/{num_batches}: Games {batch_start + 1}-{batch_end}")
-        print(f"{'='*60}")
+        print(f"\nBatch {batch_num + 1}/{num_batches}: Games {batch_start + 1}-{batch_end}")
         
         # Run this batch
         batch_results = run_simulation_games(batch_games, player, player_module_name, 
@@ -325,11 +323,10 @@ def run_simulation_games_batch(num_games: int, player, player_module_name: str, 
         import gc
         gc.collect()
         
-        print(f"\nBatch {batch_num + 1} complete. Running totals:")
-        print(f"  Games completed: {len(all_move_counts)}/{num_games}")
-        print(f"  Current average: {sum(all_move_counts) / len(all_move_counts):.2f} moves")
-        print(f"  Best so far: {best_overall} moves")
-        print(f"  Worst so far: {worst_overall} moves")
+        # Show batch summary
+        print(f"Batch {batch_num + 1} complete | Total: {len(all_move_counts)}/{num_games} games | "
+              f"Avg: {sum(all_move_counts) / len(all_move_counts):.2f} moves | "
+              f"Best: {best_overall} | Worst: {worst_overall}")
     
     overall_end_time = time.time()
     
@@ -392,43 +389,20 @@ def run_simulation_games(num_games: int, player, player_module_name: str, player
     worker_func = partial(play_single_game, module_name=player_module_name, 
                          class_name=player_class_name, player_name=player_name)
     
-    # Use multiprocessing pool
-    one_percent = max(1, num_games // 100)
-    
+    # Use multiprocessing pool with progress bar
     with Pool(processes=num_processes) as pool:
         # Use imap_unordered for better progress tracking
-        for games_completed, result in enumerate(pool.imap_unordered(worker_func, range(num_games)), 1):
-            # Only store the move count, not the entire result object
-            moves = result['moves']
-            move_counts.append(moves)
-            best_moves = min(best_moves, moves)
-            worst_moves = max(worst_moves, moves)
-            
-            # Show progress after every 1% of games (minimum 1 game)
-            if games_completed % one_percent == 0 or games_completed == num_games:
-                progress = (games_completed / num_games) * 100
-                elapsed_time = time.time() - start_time
+        with tqdm(total=num_games, desc=f"{player.name}", unit="games", 
+                  bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+            for games_completed, result in enumerate(pool.imap_unordered(worker_func, range(num_games)), 1):
+                # Only store the move count, not the entire result object
+                moves = result['moves']
+                move_counts.append(moves)
+                best_moves = min(best_moves, moves)
+                worst_moves = max(worst_moves, moves)
                 
-                # Calculate ETA
-                if games_completed < num_games:
-                    avg_time_per_game = elapsed_time / games_completed
-                    games_remaining = num_games - games_completed
-                    eta_seconds = avg_time_per_game * games_remaining
-                    
-                    # Format ETA nicely
-                    if eta_seconds < 60:
-                        eta_str = f"{eta_seconds:.1f}s"
-                    elif eta_seconds < 3600:
-                        eta_str = f"{eta_seconds / 60:.1f}m"
-                    else:
-                        hours = eta_seconds / 3600
-                        eta_str = f"{hours:.1f}h"
-                    
-                    print(f"Progress: {progress:.0f}% ({games_completed}/{num_games} games) | "
-                          f"Elapsed: {elapsed_time:.1f}s | ETA: {eta_str}")
-                else:
-                    print(f"Progress: {progress:.0f}% ({games_completed}/{num_games} games) | "
-                          f"Total time: {elapsed_time:.1f}s")
+                # Update progress bar
+                pbar.update(1)
     
     end_time = time.time()
     
