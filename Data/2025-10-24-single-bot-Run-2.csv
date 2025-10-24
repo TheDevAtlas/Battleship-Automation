@@ -1,0 +1,28 @@
+# Battleship Game Analysis Results
+# Generated: 2025-10-24 10:21:40
+# Comparison Type: single-bot
+
+# SUMMARY STATISTICS
+Player Name,Random Player
+Total Games,5000
+Average Moves,95.48
+Median Moves,97.00
+Best Game,67
+Worst Game,100
+Standard Deviation,4.74
+Total Time (s),3.09
+Avg Time per Game (s),0.001
+
+# GAME-BY-GAME RESULTS
+Note: Individual game results not saved (large dataset - memory optimization)
+
+# MOVE COUNT DISTRIBUTION
+Move Range,Game Count,Percentage
+≤30 moves,0,0.0%
+31-40 moves,0,0.0%
+41-50 moves,0,0.0%
+51-60 moves,0,0.0%
+61-70 moves,5,0.1%
+71-80 moves,67,1.3%
+81-90 moves,4928,98.6%
+91+ moves,4319,86.4%
