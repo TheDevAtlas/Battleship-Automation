@@ -1,0 +1,28 @@
+# Battleship Game Analysis Results
+# Generated: 2025-10-24 14:22:50
+# Comparison Type: single-bot
+
+# SUMMARY STATISTICS
+Player Name,Optimized Monte Carlo Player
+Total Games,1
+Average Moves,44.00
+Median Moves,44.00
+Best Game,44
+Worst Game,44
+Standard Deviation,0.00
+Total Time (s),7.01
+Avg Time per Game (s),7.011
+
+# GAME-BY-GAME RESULTS
+Note: Individual game results not saved (large dataset - memory optimization)
+
+# MOVE COUNT DISTRIBUTION
+Move Range,Game Count,Percentage
+≤30 moves,0,0.0%
+31-40 moves,0,0.0%
+41-50 moves,1,100.0%
+51-60 moves,0,0.0%
+61-70 moves,0,0.0%
+71-80 moves,0,0.0%
+81-90 moves,0,0.0%
+91+ moves,0,0.0%

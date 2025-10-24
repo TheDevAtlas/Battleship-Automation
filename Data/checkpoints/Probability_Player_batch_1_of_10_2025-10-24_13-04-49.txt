@@ -1,0 +1,8 @@
+Player: Probability Player
+Batch: 1/10
+Games completed: 100000
+Best moves: 20
+Worst moves: 79
+Average moves: 51.09
+Total time: 262.25s
+Timestamp: 2025-10-24_13-04-49
