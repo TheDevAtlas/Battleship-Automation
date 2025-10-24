@@ -272,6 +272,15 @@ def play_single_game(game_num, module_name, class_name, player_name):
     player = player_class(player_name)
     game = Game(player)
     result = game.play_game(show_moves=False)
+    
+    # Explicitly reset player state to free memory
+    if hasattr(player, 'reset'):
+        player.reset()
+    
+    # Clean up references
+    del player
+    del game
+    
     return result
 
 def run_simulation_games_batch(num_games: int, player, player_module_name: str, player_class_name: str, 
@@ -305,13 +314,15 @@ def run_simulation_games_batch(num_games: int, player, player_module_name: str, 
     with tqdm(total=num_games, desc=f"{player.name}", unit="games", 
               bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
         
-        # Use maxtasksperchild to prevent memory leaks in very long runs
-        with Pool(processes=num_processes, maxtasksperchild=1000) as pool:
-            for batch_num in range(num_batches):
-                batch_start = batch_num * batch_size
-                batch_end = min((batch_num + 1) * batch_size, num_games)
-                batch_games = batch_end - batch_start
-                
+        # Process each batch with a fresh Pool to prevent memory leaks
+        for batch_num in range(num_batches):
+            batch_start = batch_num * batch_size
+            batch_end = min((batch_num + 1) * batch_size, num_games)
+            batch_games = batch_end - batch_start
+            
+            # Create a new Pool for each batch - this ensures complete cleanup
+            # Use a low maxtasksperchild to recycle workers frequently
+            with Pool(processes=num_processes, maxtasksperchild=100) as pool:
                 # Run this batch with progress updates - use chunksize for better throughput
                 chunksize = max(1, batch_games // (num_processes * 4))
                 for result in pool.imap_unordered(worker_func, range(batch_start, batch_end), chunksize=chunksize):
@@ -324,14 +335,17 @@ def run_simulation_games_batch(num_games: int, player, player_module_name: str, 
                     # Update the unified progress bar
                     pbar.update(1)
                 
-                # Save checkpoint after each batch
-                save_checkpoint(player.name, batch_num + 1, num_batches, all_move_counts, 
-                               best_overall, worst_overall, time.time() - overall_start_time)
-                
-                # Clear memory less frequently to keep processes busy
-                if (batch_num + 1) % 10 == 0:  # Every 10 batches instead of 5
-                    import gc
-                    gc.collect()
+                # Explicitly close and join the pool to ensure cleanup
+                pool.close()
+                pool.join()
+            
+            # Save checkpoint after each batch
+            save_checkpoint(player.name, batch_num + 1, num_batches, all_move_counts, 
+                           best_overall, worst_overall, time.time() - overall_start_time)
+            
+            # Aggressive garbage collection after each batch
+            import gc
+            gc.collect()
     
     overall_end_time = time.time()
     
@@ -393,8 +407,8 @@ def run_simulation_games(num_games: int, player, player_module_name: str, player
     # Create a partial function with player info
     worker_func = partial(play_single_game, module_name=player_module_name, 
                          class_name=player_class_name, player_name=player_name)    # Use multiprocessing pool with progress bar
-    # Use maxtasksperchild to prevent memory leaks in very long runs
-    with Pool(processes=num_processes, maxtasksperchild=1000) as pool:
+    # Use low maxtasksperchild to prevent memory leaks - recycle workers frequently
+    with Pool(processes=num_processes, maxtasksperchild=100) as pool:
         # Use imap_unordered for better progress tracking with chunksize for better throughput
         chunksize = max(1, num_games // (num_processes * 4))
         with tqdm(total=num_games, desc=f"{player.name}", unit="games", 
@@ -408,6 +422,19 @@ def run_simulation_games(num_games: int, player, player_module_name: str, player
                 
                 # Update progress bar
                 pbar.update(1)
+                
+                # Periodic garbage collection to prevent memory buildup
+                if games_completed % 500 == 0:
+                    import gc
+                    gc.collect()
+        
+        # Explicit cleanup
+        pool.close()
+        pool.join()
+    
+    # Final garbage collection
+    import gc
+    gc.collect()
     
     end_time = time.time()
     
@@ -583,22 +610,26 @@ def main():
         print(f"  - {player_info['name']} (from {player_info['file']})")
     
     bot_choice, show_gui, num_games = get_user_choice(player_classes)
-    
-    # Helper function to determine batch size for a specific player
+      # Helper function to determine batch size for a specific player
     def get_batch_size_for_player(player_name: str, num_games: int) -> int:
         """Determine optimal batch size based on player type and number of games"""
         # Monte Carlo players need smaller batches due to memory-intensive simulations
+        # Each batch creates a fresh pool, so smaller is better for memory
         if 'monte' in player_name.lower() and 'carlo' in player_name.lower():
-            print(f"  → Using small batch size (100) for Monte Carlo player to manage memory usage")
-            return 100
+            print(f"  → Using small batch size (50) for Monte Carlo player to manage memory usage")
+            return 50
         
-        # Other players can use larger batches for better performance
+        # Other players can use slightly larger batches but still conservative
         if num_games >= 500000:
-            return 100000  # 100K per batch for very large runs
+            print(f"  → Using batch size (200) for large simulation")
+            return 200
         elif num_games >= 100000:
-            return 50000  # 50K per batch
+            print(f"  → Using batch size (100) for medium simulation")
+            return 100
         else:
-            return num_games  # No batching for small runs
+            # For smaller runs, use even smaller batches to minimize overhead
+            print(f"  → Using batch size (50) for small simulation")
+            return 50
     
     compare_all_option = len(player_classes) + 1
     # Single player mode

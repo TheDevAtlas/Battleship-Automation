@@ -1,8 +1,0 @@
-Player: Spaced Random Player
-Batch: 1/10
-Games completed: 100000
-Best moves: 22
-Worst moves: 100
-Average moves: 58.23
-Total time: 16.53s
-Timestamp: 2025-10-24_12-57-58
