@@ -1,363 +1,177 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Battleship Automation</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Battleship Board</title>
+  <style>
+    :root{
+      --bg:#111213; --panel:#1e1e1f; --panel-border:#2b2b2c; --board-bg:#151516;
+      --cell-border:#2b2b2c; --unguessed:#3d3d3f; --miss:#333335; --miss-dot:#232324;
+      --hit:#d71919; --hit-border:#7a0c0c; --sunk:#5a0a0a; --text:#fff;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;background:var(--bg);color:var(--text);font-family:Arial,Helvetica,sans-serif;padding:20px}
+    
+    .header{text-align:center;margin-bottom:20px}
+    .header h1{font-size:2.5em;margin:0 0 10px 0;color:#fff;text-shadow:0 0 10px rgba(255,255,255,.3)}
+    
+    .info-panel{display:flex;justify-content:space-around;gap:30px;margin-bottom:20px;background:var(--panel);border:1px solid var(--panel-border);border-radius:10px;padding:15px 30px;box-shadow:0 4px 12px rgba(0,0,0,.5)}
+    .info-item{text-align:center}
+    .info-label{font-size:0.85em;color:#888;margin-bottom:5px}
+    .info-value{font-size:1.6em;font-weight:bold;color:#fff}
+    
+    .board-wrap{background:var(--panel);border:1px solid var(--panel-border);border-radius:12px;padding:12px;box-shadow:0 8px 32px rgba(0,0,0,.6)}
+    .board{display:grid;grid-template-columns:repeat(10,60px);grid-template-rows:repeat(10,60px);gap:6px;background:var(--board-bg);padding:6px;border-radius:10px}
+    .cell{position:relative;border:1px solid var(--cell-border);border-radius:6px;background:var(--unguessed);transition:all 0.3s ease}
 
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #1a1a1a;
-            color: #e0e0e0;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            padding: 20px;
-        }
+    /* 0 unguessed */
+    .unguessed{background:var(--unguessed)}
 
-        .container {
-            max-width: 1200px;
-            width: 100%;
-        }
+    /* 1 miss */
+    .miss{background:var(--miss)}
+    .miss::after{content:"";position:absolute;inset:0;margin:auto;width:20px;height:20px;border-radius:50%;background:var(--miss-dot);box-shadow:inset 0 2px 4px rgba(0,0,0,.35)}
 
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
+    /* 2 hit (bright red circle + glow) */
+    .hit{background:var(--hit);border-color:var(--hit-border);box-shadow:0 0 22px rgba(215,25,25,.6), inset 0 -6px 10px rgba(0,0,0,.35);animation:glow 1.4s ease-in-out infinite}
+    .hit::after{content:"";position:absolute;inset:0;margin:auto;width:28px;height:28px;border-radius:50%;background:#fff;box-shadow:0 0 14px rgba(255,255,255,.9)}
+    @keyframes glow{0%,100%{box-shadow:0 0 22px rgba(215,25,25,.6), inset 0 -6px 10px rgba(0,0,0,.35)}50%{box-shadow:0 0 36px rgba(215,25,25,.85), inset 0 -6px 10px rgba(0,0,0,.35)}}
 
-        .header h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            color: #ffffff;
-            text-shadow: 0 0 10px rgba(255, 255, 255, 0.3);
-        }
-
-        .info-panel {
-            display: flex;
-            justify-content: space-around;
-            margin-bottom: 30px;
-            background: #2a2a2a;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-        }
-
-        .info-item {
-            text-align: center;
-        }
-
-        .info-label {
-            font-size: 0.9em;
-            color: #888;
-            margin-bottom: 5px;
-        }
-
-        .info-value {
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #ffffff;
-        }
-
-        .game-board {
-            display: grid;
-            grid-template-columns: repeat(10, 1fr);
-            gap: 4px;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background: #2a2a2a;
-            border-radius: 10px;
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-        }
-
-        .cell {
-            aspect-ratio: 1;
-            border-radius: 4px;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-        }
-
-        /* Unknown/Unguessed cells - light grey */
-        .cell.unknown {
-            background: #4a4a4a;
-            box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.3);
-        }
-
-        /* Probability overlay for unknown cells */
-        .cell.unknown.probability {
-            background: linear-gradient(135deg, #4a4a4a 0%, #4a4a4a 100%);
-        }
-
-        /* Miss cells - dark grey */
-        .cell.miss {
-            background: #2c2c2c;
-            border: 2px solid #1a1a1a;
-        }
-
-        .cell.miss::after {
-            content: '';
-            width: 40%;
-            height: 40%;
-            background: #3a3a3a;
-            border-radius: 50%;
-        }
-
-        /* Hit cells - glowing reddish pink */
-        .cell.hit {
-            background: linear-gradient(135deg, #ff4d6d 0%, #ff1744 100%);
-            box-shadow: 0 0 15px rgba(255, 77, 109, 0.6),
-                        inset 0 0 10px rgba(255, 255, 255, 0.2);
-            animation: pulse-hit 1.5s ease-in-out infinite;
-        }
-
-        .cell.hit::after {
-            content: '';
-            position: absolute;
-            width: 30%;
-            height: 30%;
-            background: #ffffff;
-            border-radius: 50%;
-            box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
-        }
-
-        /* Sunk ship cells - darker red */
-        .cell.sunk {
-            background: linear-gradient(135deg, #8b0000 0%, #a50000 100%);
-            border: 2px solid #5a0000;
-            box-shadow: 0 0 10px rgba(139, 0, 0, 0.5),
-                        inset 0 0 8px rgba(0, 0, 0, 0.5);
-        }
-
-        .cell.sunk::after {
-            content: '✕';
-            color: #ffffff;
-            font-size: 1.5em;
-            font-weight: bold;
-            text-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
-        }
-
-        @keyframes pulse-hit {
-            0%, 100% {
-                box-shadow: 0 0 15px rgba(255, 77, 109, 0.6),
-                            inset 0 0 10px rgba(255, 255, 255, 0.2);
-            }
-            50% {
-                box-shadow: 0 0 25px rgba(255, 77, 109, 0.9),
-                            inset 0 0 15px rgba(255, 255, 255, 0.3);
-            }
-        }
-
-        .last-move-indicator {
-            margin-top: 20px;
-            text-align: center;
-            padding: 15px;
-            background: #2a2a2a;
-            border-radius: 8px;
-            font-size: 1.1em;
-        }
-
-        .status-bar {
-            margin-top: 20px;
-            text-align: center;
-            padding: 10px;
-            background: #2a2a2a;
-            border-radius: 8px;
-            font-size: 0.9em;
-            color: #888;
-        }
-
-        .loading {
-            text-align: center;
-            font-size: 1.5em;
-            color: #888;
-            padding: 50px;
-        }
-
-        /* Responsive design */
-        @media (max-width: 768px) {
-            .header h1 {
-                font-size: 1.8em;
-            }
-
-            .info-panel {
-                flex-direction: column;
-                gap: 15px;
-            }
-
-            .game-board {
-                gap: 2px;
-                padding: 10px;
-            }
-        }
-
-        /* High resolution support */
-        @media (min-width: 1400px) {
-            .game-board {
-                max-width: 1000px;
-                gap: 6px;
-            }
-
-            .header h1 {
-                font-size: 3em;
-            }
-
-            .info-value {
-                font-size: 2.2em;
-            }
-        }
-    </style>
+    /* 3 sunk (dark red with X) */
+    .sunk{background:var(--sunk);border-color:var(--hit-border);box-shadow:inset 0 -6px 14px rgba(0,0,0,.6)}
+    .sunk::before,.sunk::after{content:"";position:absolute;inset:0;margin:auto;width:55%;height:3px;background:#fff;border-radius:2px;opacity:.9}
+    .sunk::before{transform:rotate(45deg)}
+    .sunk::after{transform:rotate(-45deg)}
+    
+    .last-move-indicator{margin-top:20px;text-align:center;padding:15px;background:var(--panel);border:1px solid var(--panel-border);border-radius:8px;font-size:1.1em;box-shadow:0 4px 12px rgba(0,0,0,.5)}
+    
+    /* Responsive design */
+    @media (max-width: 768px) {
+      .header h1{font-size:1.8em}
+      .info-panel{flex-direction:column;gap:10px;padding:10px 20px}
+      .board{grid-template-columns:repeat(10,40px);grid-template-rows:repeat(10,40px);gap:4px}
+    }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🎯 Battleship Automation</h1>
-        </div>
-
-        <div class="info-panel">
-            <div class="info-item">
-                <div class="info-label">Game</div>
-                <div class="info-value" id="game-number">-</div>
-            </div>
-            <div class="info-item">
-                <div class="info-label">Total Games</div>
-                <div class="info-value" id="total-games">-</div>
-            </div>
-            <div class="info-item">
-                <div class="info-label">Moves</div>
-                <div class="info-value" id="move-count">0</div>
-            </div>
-        </div>
-
-        <div class="game-board" id="game-board">
-            <!-- Grid cells will be generated by JavaScript -->
-        </div>
-
-        <div class="last-move-indicator" id="last-move">
-            Waiting for game to start...
-        </div>
-
-        <div class="status-bar">
-            <span style="color: #888;">Gray = Unknown</span> | 
-            <span style="color: #ff8c00;">Bright Orange = High Probability</span> | 
-            <span style="color: #a020f0;">Purple/Magenta = Low Probability</span> | 
-            <span style="color: #ff4d6d;">Red = Hit</span> | 
-            <span style="color: #8b0000;">Dark Red = Sunk</span> | 
-            <span style="color: #3a3a3a;">Dark = Miss</span>
-        </div>
+  <div class="header">
+    <h1>🎯 Battleship Automation</h1>
+  </div>
+  
+  <div class="info-panel">
+    <div class="info-item">
+      <div class="info-label">Game</div>
+      <div class="info-value" id="game-number">-</div>
     </div>
+    <div class="info-item">
+      <div class="info-label">Total Games</div>
+      <div class="info-value" id="total-games">-</div>
+    </div>
+    <div class="info-item">
+      <div class="info-label">Moves</div>
+      <div class="info-value" id="move-count">0</div>
+    </div>
+  </div>
 
-    <script>
-        const gameBoard = document.getElementById('game-board');
-        const gameNumberEl = document.getElementById('game-number');
-        const totalGamesEl = document.getElementById('total-games');
-        const moveCountEl = document.getElementById('move-count');
-        const lastMoveEl = document.getElementById('last-move');
+  <div class="board-wrap"><div id="board" class="board"></div></div>
+  
+  <div class="last-move-indicator" id="last-move">
+    Waiting for game to start...
+  </div>
 
-        // Create the 10x10 grid
-        for (let i = 0; i < 100; i++) {
-            const cell = document.createElement('div');
-            cell.className = 'cell unknown';
-            cell.dataset.row = Math.floor(i / 10);
-            cell.dataset.col = i % 10;
-            gameBoard.appendChild(cell);
+  <script>
+    const board = document.getElementById('board');
+    const gameNumberEl = document.getElementById('game-number');
+    const totalGamesEl = document.getElementById('total-games');
+    const moveCountEl = document.getElementById('move-count');
+    const lastMoveEl = document.getElementById('last-move');
+
+    // Create the 10x10 grid
+    for(let i=0;i<100;i++){
+      const cell = document.createElement('div');
+      cell.className = 'cell unguessed';
+      cell.dataset.row = Math.floor(i / 10);
+      cell.dataset.col = i % 10;
+      board.appendChild(cell);
+    }
+
+    const cells = board.children;
+
+    // Map backend state names to numeric codes
+    function stateToCode(stateName) {
+      const stateMap = {
+        'unknown': 0,
+        'miss': 1,
+        'hit': 2,
+        'sunk': 3
+      };
+      return stateMap[stateName] !== undefined ? stateMap[stateName] : 0;
+    }
+
+    // Update a single cell
+    function updateCell(row, col, state) {
+      const i = row * 10 + col;
+      const cell = cells[i];
+      if (!cell) return;
+      
+      const stateCode = (typeof state === 'number') ? state : stateToCode(state);
+      const className = ['unguessed', 'miss', 'hit', 'sunk'][stateCode];
+      cell.className = 'cell ' + className;
+    }
+
+    // Update entire board from 2D state array
+    function updateBoard(state) {
+      for (let r = 0; r < 10; r++) {
+        for (let c = 0; c < 10; c++) {
+          updateCell(r, c, state[r][c]);
+        }
+      }
+    }
+
+    // Fetch and update game state from backend
+    async function updateGameState() {
+      try {
+        const response = await fetch('/api/state');
+        const data = await response.json();
+
+        // Update info panel
+        gameNumberEl.textContent = data.game_number;
+        totalGamesEl.textContent = data.total_games;
+        moveCountEl.textContent = data.move_count;
+
+        // Update last move indicator
+        if (data.last_move) {
+          const [row, col] = data.last_move.position;
+          const result = data.last_move.result;
+          lastMoveEl.innerHTML = `Last Move: <strong>(${row}, ${col})</strong> - ${result.toUpperCase()}`;
+        } else if (data.is_running) {
+          lastMoveEl.textContent = 'Game in progress...';
+        } else {
+          lastMoveEl.textContent = 'Waiting for game to start...';
         }
 
-        const cells = document.querySelectorAll('.cell');
+        // Update board cells
+        data.board.forEach((row, rowIndex) => {
+          row.forEach((cellData, colIndex) => {
+            updateCell(rowIndex, colIndex, cellData.state);
+          });
+        });
 
-        async function updateGameState() {
-            try {
-                const response = await fetch('/api/state');
-                const data = await response.json();
+      } catch (error) {
+        console.error('Error fetching game state:', error);
+        lastMoveEl.textContent = 'Error connecting to server...';
+      }
+    }
 
-                // Update info panel
-                gameNumberEl.textContent = data.game_number;
-                totalGamesEl.textContent = data.total_games;
-                moveCountEl.textContent = data.move_count;
+    // Make functions available globally for debugging
+    window.updateCell = updateCell;
+    window.updateBoard = updateBoard;
 
-                // Update last move indicator
-                if (data.last_move) {
-                    const [row, col] = data.last_move.position;
-                    const result = data.last_move.result;
-                    lastMoveEl.innerHTML = `Last Move: <strong>(${row}, ${col})</strong> - ${result.toUpperCase()}`;
-                } else if (data.is_running) {
-                    lastMoveEl.textContent = 'Game in progress...';
-                } else {
-                    lastMoveEl.textContent = 'Waiting for game to start...';
-                }
-
-                // Update board cells
-                data.board.forEach((row, rowIndex) => {
-                    row.forEach((cellData, colIndex) => {
-                        const cellIndex = rowIndex * 10 + colIndex;
-                        const cellEl = cells[cellIndex];
-                        
-                        // Remove all state classes
-                        cellEl.classList.remove('unknown', 'miss', 'hit', 'sunk', 'probability');
-                        
-                        // Add the appropriate class
-                        cellEl.classList.add(cellData.state);
-                        
-                        // Apply probability visualization for ALL unknown cells (even with 0 probability)
-                        if (cellData.state === 'unknown' && cellData.probability !== undefined) {
-                            // Normalize probability to 0-1 range for visualization
-                            const intensity = Math.min(Math.max(cellData.probability, 0), 1.0);
-                            
-                            // Create color gradient from very light purple (0) to dark purple/magenta (low) to bright orange (high)
-                            let r, g, b;
-                            
-                            if (intensity === 0) {
-                                // No probability: very light purple/gray
-                                r = 90;
-                                g = 80;
-                                b = 110;
-                            } else if (intensity < 0.5) {
-                                // Low probability: light purple to dark purple/magenta
-                                const t = intensity * 2; // 0 to 1
-                                r = Math.floor(90 + t * 110);  // 90 to 200
-                                g = Math.floor(80 + t * 0);    // 80 to 80 (stay low)
-                                b = Math.floor(110 + t * 90);  // 110 to 200
-                            } else {
-                                // High probability: magenta to bright orange
-                                const t = (intensity - 0.5) * 2; // 0 to 1
-                                r = Math.floor(200 + t * 55);  // 200 to 255
-                                g = Math.floor(80 + t * 60);   // 80 to 140
-                                b = Math.floor(200 - t * 200); // 200 to 0
-                            }
-                            
-                            const bgColor = `rgb(${r}, ${g}, ${b})`;
-                            
-                            cellEl.style.backgroundColor = bgColor;
-                            cellEl.classList.add('probability');
-                        } else {
-                            // For all other cells (miss, hit, sunk),
-                            // explicitly clear the inline background color to let CSS classes take over
-                            cellEl.style.backgroundColor = '';
-                        }
-                    });
-                });
-
-            } catch (error) {
-                console.error('Error fetching game state:', error);
-                lastMoveEl.textContent = 'Error connecting to server...';
-            }
-        }
-
-        // Update every 50ms for smooth animation
-        setInterval(updateGameState, 50);
-        
-        // Initial update
-        updateGameState();
-    </script>
+    // Update every 50ms for smooth animation
+    setInterval(updateGameState, 50);
+    
+    // Initial update
+    updateGameState();
+  </script>
 </body>
 </html>
