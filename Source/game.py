@@ -1,4 +1,4 @@
-from board import Board
+from Source.board import Board
 from typing import Dict, Any
 
 class Game:

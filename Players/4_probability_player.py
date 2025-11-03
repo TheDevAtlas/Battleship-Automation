@@ -1,6 +1,6 @@
 import random
 from typing import Tuple, List, Set, Optional, Dict
-from board import Board
+from Source.board import Board
 import numpy as np
 
 class ProbabilityPlayer:
@@ -24,7 +24,7 @@ class ProbabilityPlayer:
         self.ship_sizes = [5, 4, 3, 3, 2]  # Known ship sizes
         self.sunk_ships = []  # Track which ships have been sunk (indices)
         self.board_size = 10
-        self.probability_map = None
+        self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
         
     def make_move(self, board: Board) -> Tuple[int, int]:
         """Make a move based on probability mapping and current strategy"""
@@ -173,6 +173,9 @@ class ProbabilityPlayer:
         """Make a probability-guided target move when pursuing a hit ship"""
         if not self.target_stack:
             return self._hunt_move(board)
+        
+        # Update probability map even in target mode for visualization
+        self._update_probability_map(board)
         
         # Among targets in the stack, choose the one with highest probability
         best_target = None
@@ -335,4 +338,4 @@ class ProbabilityPlayer:
         self.current_ship_hits = []
         self.sunk_ship_coords = set()
         self.sunk_ships = []
-        self.probability_map = None
+        self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)

@@ -1,6 +1,6 @@
 import random
 from typing import Tuple, List
-from board import Board
+from Source.board import Board
 
 class RandomPlayer:
     """A player that makes completely random moves"""

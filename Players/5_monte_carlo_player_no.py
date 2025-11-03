@@ -1,7 +1,7 @@
 import random
 import numpy as np
 from typing import Tuple, List, Set, Optional, Dict
-from board import Board
+from Source.board import Board
 from collections import defaultdict
 
 class MonteCarloPlayer:
@@ -62,6 +62,9 @@ class MonteCarloPlayer:
         
         # Run Monte Carlo simulations to build heat map
         heat_map = self._monte_carlo_simulations(board)
+        
+        # Store as probability_map for visualization
+        self.probability_map = heat_map
         
         # Get valid moves
         valid_moves = board.get_valid_moves()
@@ -292,6 +295,9 @@ class MonteCarloPlayer:
         if not self.target_stack:
             return self._hunt_move(board)
         
+        # Create a probability map for target mode visualization
+        self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
+        
         # Score each target based on:
         # 1. Likelihood of continuing the ship
         # 2. Potential to sink the ship quickly
@@ -309,6 +315,8 @@ class MonteCarloPlayer:
             
             # Calculate target score
             score = self._score_target_move(board, target)
+            # Update probability map with target scores
+            self.probability_map[row, col] = score
             
             if score > best_score:
                 best_score = score

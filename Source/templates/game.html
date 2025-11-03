@@ -94,6 +94,11 @@
             box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.3);
         }
 
+        /* Probability overlay for unknown cells */
+        .cell.unknown.probability {
+            background: linear-gradient(135deg, #4a4a4a 0%, #4a4a4a 100%);
+        }
+
         /* Miss cells - dark grey */
         .cell.miss {
             background: #2c2c2c;
@@ -243,7 +248,11 @@
         </div>
 
         <div class="status-bar">
-            Auto-updating every 50ms
+            <span style="color: #888;">Gray = Unknown</span> | 
+            <span style="color: #66ff66;">Green = High Probability</span> | 
+            <span style="color: #ff4d6d;">Red = Hit</span> | 
+            <span style="color: #8b0000;">Dark Red = Sunk</span> | 
+            <span style="color: #3a3a3a;">Dark = Miss</span>
         </div>
     </div>
 
@@ -293,10 +302,27 @@
                         const cellEl = cells[cellIndex];
                         
                         // Remove all state classes
-                        cellEl.classList.remove('unknown', 'miss', 'hit', 'sunk');
+                        cellEl.classList.remove('unknown', 'miss', 'hit', 'sunk', 'probability');
                         
                         // Add the appropriate class
                         cellEl.classList.add(cellData.state);
+                        
+                        // Apply probability visualization for unknown cells
+                        if (cellData.state === 'unknown' && cellData.probability !== undefined && cellData.probability > 0) {
+                            // Normalize probability to 0-1 range for visualization
+                            const intensity = Math.min(cellData.probability, 1.0);
+                            
+                            // Create green gradient based on probability
+                            // Light green (low probability) to bright green (high probability)
+                            const greenValue = Math.floor(50 + (intensity * 205)); // 50-255
+                            const bgColor = `rgb(${Math.floor(greenValue * 0.3)}, ${greenValue}, ${Math.floor(greenValue * 0.4)})`;
+                            
+                            cellEl.style.backgroundColor = bgColor;
+                            cellEl.classList.add('probability');
+                        } else if (cellData.state === 'unknown') {
+                            // Reset to default unknown color
+                            cellEl.style.backgroundColor = '';
+                        }
                     });
                 });
 

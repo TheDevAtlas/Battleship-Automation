@@ -1,7 +1,7 @@
 import random
 import numpy as np
 from typing import Tuple, List, Set, Optional, Dict
-from board import Board
+from Source.board import Board
 from collections import defaultdict
 from functools import lru_cache
 import numba
@@ -81,6 +81,9 @@ class OptimizedMonteCarloPlayer:
         
         # Run optimized Monte Carlo simulations
         heat_map = self._monte_carlo_simulations_optimized(board)
+        
+        # Store as probability_map for visualization
+        self.probability_map = heat_map
         
         valid_moves = board.get_valid_moves()
         if not valid_moves:
@@ -233,6 +236,9 @@ class OptimizedMonteCarloPlayer:
         if not self.target_stack:
             return self._hunt_move(board)
         
+        # Create a probability map for target mode visualization
+        self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
+        
         best_target = None
         best_score = -float('inf')
         best_index = -1
@@ -244,6 +250,8 @@ class OptimizedMonteCarloPlayer:
                 continue
             
             score = self._score_target_move(board, target)
+            # Update probability map with target scores
+            self.probability_map[row][col] = score
             
             if score > best_score:
                 best_score = score

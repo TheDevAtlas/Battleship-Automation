@@ -1,17 +1,28 @@
 import random
 from typing import Tuple, List, Set, Optional
-from board import Board
+from Source.board import Board
 
-class RandomTargetPlayer:
-    """A player that uses random moves for hunting, but switches to target mode when a hit is found"""
+class SpacedRandomPlayer:
+    """A player that uses spacing strategies to reduce guesses while maintaining randomness.
     
-    def __init__(self, name: str = "Random Target Player"):
+    Key insight: For a ship of size N, we only need to check every Nth square in a grid pattern
+    to guarantee we'll hit it. This dramatically reduces the search space while staying random.
+    
+    For example:
+    - Size 2 ship: Check every 2nd square (50% reduction)
+    - Size 3 ship: Check every 3rd square (67% reduction)  
+    - Size 4 ship: Check every 4th square (75% reduction)
+    - Size 5 ship: Check every 5th square (80% reduction)
+    """
+    
+    def __init__(self, name: str = "Spaced Random Player"):
         self.name = name
         self.mode = "hunt"  # "hunt" or "target"
         self.target_stack = []  # Stack of coordinates to investigate after a hit
         self.current_ship_hits = []  # Current ship being targeted
         self.sunk_ship_coords = set()  # All coordinates of sunk ships
         self.ship_sizes = [5, 4, 3, 3, 2]  # Known ship sizes
+        self.sunk_ships = []  # Track which ships have been sunk
         
     def make_move(self, board: Board) -> Tuple[int, int]:
         """Make a move based on current strategy (hunt or target)"""
@@ -20,24 +31,70 @@ class RandomTargetPlayer:
         else:
             return self._hunt_move(board)
     
-    def _hunt_move(self, board: Board) -> Tuple[int, int]:
-        """Make a random move during hunt phase"""
-        self.mode = "hunt"
+    def _get_smallest_remaining_ship(self) -> int:
+        """Get the size of the smallest ship that hasn't been sunk yet"""
+        remaining_sizes = []
+        for i, size in enumerate(self.ship_sizes):
+            if i not in self.sunk_ships:
+                remaining_sizes.append(size)
+        
+        return min(remaining_sizes) if remaining_sizes else 2
+    
+    def _generate_spaced_grid(self, board: Board, spacing: int) -> List[Tuple[int, int]]:
+        """Generate a spaced grid pattern for hunting
+        
+        For spacing N, we check positions where (row + col) % N == 0
+        This aligns all checks on diagonals parallel to the main diagonal,
+        ensuring we hit any ship of size N while minimizing overlap.
+        
+        Example for spacing=2 on 10x10 board:
+        X . X . X . X . X .
+        . X . X . X . X . X
+        X . X . X . X . X .
+        (where X marks valid hunt positions)
+        """
         valid_moves = board.get_valid_moves()
-        if not valid_moves:
-            raise ValueError("No valid moves available")
+        spaced_moves = []
         
-        # Filter out coordinates around sunk ships to avoid wasting moves
-        filtered_moves = []
+        # Use a single offset (0) to align all checks on the same diagonal pattern
+        # This ensures efficient coverage without redundancy
         for move in valid_moves:
-            if not self._is_adjacent_to_sunk_ship(move):
-                filtered_moves.append(move)
+            row, col = move
+            if (row + col) % spacing == 0:
+                if not self._is_adjacent_to_sunk_ship(move):
+                    spaced_moves.append(move)
         
-        # If all moves are adjacent to sunk ships, use any valid move
-        if not filtered_moves:
-            filtered_moves = valid_moves
+        # If no spaced moves available (e.g., all adjacent to sunk ships),
+        # fall back to any valid move not adjacent to sunk ships
+        if not spaced_moves:
+            for move in valid_moves:
+                if not self._is_adjacent_to_sunk_ship(move):
+                    spaced_moves.append(move)
+        
+        # If still no moves, use any valid move
+        if not spaced_moves:
+            spaced_moves = valid_moves
             
-        row, col = random.choice(filtered_moves)
+        return spaced_moves
+    
+    def _hunt_move(self, board: Board) -> Tuple[int, int]:
+        """Make a spaced random move during hunt phase"""
+        self.mode = "hunt"
+        
+        # Determine spacing based on smallest remaining ship
+        smallest_ship = self._get_smallest_remaining_ship()
+        
+        # Generate spaced grid candidates
+        spaced_candidates = self._generate_spaced_grid(board, smallest_ship)
+        
+        if not spaced_candidates:
+            # Fallback to any valid move
+            valid_moves = board.get_valid_moves()
+            if not valid_moves:
+                raise ValueError("No valid moves available")
+            row, col = random.choice(valid_moves)
+        else:
+            row, col = random.choice(spaced_candidates)
         
         # Check result of this move to switch to target mode if needed
         result = self._simulate_move_result(board, row, col)
@@ -46,14 +103,9 @@ class RandomTargetPlayer:
             self.current_ship_hits = [(row, col)]
             self._add_adjacent_targets(board, row, col)
         elif result == "sunk":
-            # Ship was sunk with this hit, get the ship coordinates
+            # Ship was sunk with this hit, track it
             ship_id = board.grid[row][col]
-            sunk_coords = board.get_sunk_ship_coords(ship_id)
-            if sunk_coords:
-                self.sunk_ship_coords.update(sunk_coords)
-            self.mode = "hunt"
-            self.current_ship_hits = []
-            self.target_stack = []
+            self._handle_sunk_ship(board, ship_id)
         
         return (row, col)
     
@@ -80,14 +132,26 @@ class RandomTargetPlayer:
         elif result == "sunk":
             # Ship was sunk
             ship_id = board.grid[row][col]
-            sunk_coords = board.get_sunk_ship_coords(ship_id)
-            if sunk_coords:
-                self.sunk_ship_coords.update(sunk_coords)
-            self.mode = "hunt"
-            self.current_ship_hits = []
-            self.target_stack = []
+            self._handle_sunk_ship(board, ship_id)
         
         return (row, col)
+    
+    def _handle_sunk_ship(self, board: Board, ship_id: int):
+        """Handle when a ship is sunk"""
+        sunk_coords = board.get_sunk_ship_coords(ship_id)
+        if sunk_coords:
+            self.sunk_ship_coords.update(sunk_coords)
+            
+            # Determine which ship size was sunk and mark it
+            ship_size = len(sunk_coords)
+            for i, size in enumerate(self.ship_sizes):
+                if size == ship_size and i not in self.sunk_ships:
+                    self.sunk_ships.append(i)
+                    break
+        
+        self.mode = "hunt"
+        self.current_ship_hits = []
+        self.target_stack = []
     
     def _simulate_move_result(self, board: Board, row: int, col: int) -> str:
         """Simulate what the result of a move would be without actually making it"""
@@ -170,3 +234,4 @@ class RandomTargetPlayer:
         self.target_stack = []
         self.current_ship_hits = []
         self.sunk_ship_coords = set()
+        self.sunk_ships = []

@@ -1,5 +1,5 @@
-from game import Game
-from analysis import analyze_and_save_results
+from Source.game import Game
+from Source.analysis import analyze_and_save_results
 import time
 import statistics
 import multiprocessing
@@ -13,7 +13,7 @@ from datetime import datetime
 from tqdm import tqdm
 import threading
 import webbrowser
-from web_server import start_server, update_game_state, set_paused, set_running
+from Source.web_server import start_server, update_game_state, set_paused, set_running
 
 class BattleshipGUI:
     def __init__(self, num_games):
@@ -102,6 +102,11 @@ class BattleshipGUI:
             
             # Update web display
             self.update_web_display(last_move_info)
+            
+            # Check if game is over
+            if self.game.board.is_game_over():
+                time.sleep(0.1)  # Brief pause before finishing
+                self.finish_current_game()
     
     def finish_current_game(self):
         """Finish the current game and start next or show results"""
@@ -193,7 +198,7 @@ Average moves: {average_moves:.2f}
 def play_single_game(game_num, module_name, class_name, player_name):
     """Worker function to play a single game - designed for multiprocessing"""
     # Import the module and get the class (fixes pickling issues)
-    spec = importlib.util.spec_from_file_location(module_name, f"{module_name}.py")
+    spec = importlib.util.spec_from_file_location(module_name, f"Players/{module_name}.py")
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load module {module_name}")
     module = importlib.util.module_from_spec(spec)
@@ -431,9 +436,9 @@ def save_checkpoint(player_name: str, batch_num: int, total_batches: int,
 
 
 def discover_player_classes():
-    """Dynamically discover all player classes in *player.py files"""
+    """Dynamically discover all player classes in Players/*player.py files"""
     player_classes = []
-    player_files = glob.glob("*player.py")
+    player_files = glob.glob("Players/*player.py")
     
     for file_path in sorted(player_files):
         try:
