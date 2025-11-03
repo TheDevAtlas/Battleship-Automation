@@ -25,7 +25,7 @@
     .board{display:grid;grid-template-columns:repeat(10,60px);grid-template-rows:repeat(10,60px);gap:6px;background:var(--board-bg);padding:6px;border-radius:10px}
     .cell{position:relative;border:1px solid var(--cell-border);border-radius:6px;background:var(--unguessed);transition:all 0.3s ease}
 
-    /* 0 unguessed */
+    /* 0 unguessed with probability heatmap */
     .unguessed{background:var(--unguessed)}
 
     /* 1 miss */
@@ -109,7 +109,7 @@
     }
 
     // Update a single cell
-    function updateCell(row, col, state) {
+    function updateCell(row, col, state, probability) {
       const i = row * 10 + col;
       const cell = cells[i];
       if (!cell) return;
@@ -117,13 +117,32 @@
       const stateCode = (typeof state === 'number') ? state : stateToCode(state);
       const className = ['unguessed', 'miss', 'hit', 'sunk'][stateCode];
       cell.className = 'cell ' + className;
+      
+      // Only show probability heatmap on unguessed cells
+      if (stateCode === 0 && probability !== undefined && probability > 0) {
+        // Enhanced visibility: square root scaling to make low values more visible
+        // This ensures even probability values as low as 0.01 are still visible
+        const enhancedProb = Math.sqrt(probability);
+        
+        // Interpolate from dark brown (low prob) to bright yellow/orange (high prob)
+        const intensity = Math.floor(enhancedProb * 255);
+        const r = Math.min(255, 80 + intensity);       // 80-255 range
+        const g = Math.min(200, 40 + intensity * 0.8);  // 40-200 range
+        const b = 20;                                   // Constant low blue
+        cell.style.background = `rgb(${r}, ${g}, ${b})`;
+      } else {
+        cell.style.background = '';
+      }
     }
 
     // Update entire board from 2D state array
-    function updateBoard(state) {
+    function updateBoard(boardData) {
       for (let r = 0; r < 10; r++) {
         for (let c = 0; c < 10; c++) {
-          updateCell(r, c, state[r][c]);
+          const cellData = boardData[r][c];
+          const state = (typeof cellData === 'object') ? cellData.state : cellData;
+          const probability = (typeof cellData === 'object') ? cellData.probability : 0;
+          updateCell(r, c, state, probability);
         }
       }
     }
@@ -153,7 +172,7 @@
         // Update board cells
         data.board.forEach((row, rowIndex) => {
           row.forEach((cellData, colIndex) => {
-            updateCell(rowIndex, colIndex, cellData.state);
+            updateCell(rowIndex, colIndex, cellData.state, cellData.probability || 0);
           });
         });
 
