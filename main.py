@@ -1,5 +1,3 @@
-import tkinter as tk
-from tkinter import messagebox
 from game import Game
 from analysis import analyze_and_save_results
 import time
@@ -13,6 +11,9 @@ import importlib.util
 import inspect
 from datetime import datetime
 from tqdm import tqdm
+import threading
+import webbrowser
+from web_server import start_server, update_game_state, set_paused, set_running
 
 class BattleshipGUI:
     def __init__(self, num_games):
@@ -20,73 +21,28 @@ class BattleshipGUI:
         self.current_game = 0
         self.games_results = []
         
-        # Create main window
-        self.root = tk.Tk()
-        self.root.title("Battleship Automation - GUI Mode")
-        self.root.geometry("800x700")
-        self.root.configure(bg="#2c3e50")
-        
-        # Create info frame
-        self.info_frame = tk.Frame(self.root, bg="#2c3e50")
-        self.info_frame.pack(pady=10)
-        
-        self.game_label = tk.Label(self.info_frame, text=f"Game 1 of {num_games}", 
-                                  font=("Arial", 14, "bold"), fg="white", bg="#2c3e50")
-        self.game_label.pack()
-        
-        self.move_label = tk.Label(self.info_frame, text="Move: 0", 
-                                  font=("Arial", 12), fg="white", bg="#2c3e50")
-        self.move_label.pack()
-        
-        # Create grid frame
-        self.grid_frame = tk.Frame(self.root, bg="#34495e", relief="solid", bd=2)
-        self.grid_frame.pack(expand=True, padx=20, pady=20)
-        
-        # Create button grid
-        self.buttons = []
-        for row in range(10):
-            button_row = []
-            for col in range(10):
-                button = tk.Button(
-                    self.grid_frame,
-                    width=4,
-                    height=2,
-                    text="",
-                    bg="#3498db",
-                    fg="white",
-                    relief="raised",
-                    borderwidth=2,
-                    font=("Arial", 8, "bold"),
-                    state="disabled"
-                )
-                button.grid(row=row, column=col, padx=1, pady=1)
-                button_row.append(button)
-            self.buttons.append(button_row)
-        
-        # Control buttons
-        self.control_frame = tk.Frame(self.root, bg="#2c3e50")
-        self.control_frame.pack(pady=10)
-        
-        self.start_button = tk.Button(self.control_frame, text="Start Games", 
-                                     command=self.start_games, font=("Arial", 12, "bold"),
-                                     bg="#27ae60", fg="white", padx=20)
-        self.start_button.pack(side=tk.LEFT, padx=10)
-        
-        self.pause_button = tk.Button(self.control_frame, text="Pause Games", 
-                                     command=self.pause_games, font=("Arial", 12, "bold"),
-                                     bg="#e67e22", fg="white", padx=20, state="disabled")
-        self.pause_button.pack(side=tk.LEFT, padx=10)
-        
-        self.next_button = tk.Button(self.control_frame, text="Next Move", 
-                                    command=self.next_move, font=("Arial", 12),
-                                    bg="#f39c12", fg="white", padx=20, state="disabled")
-        self.next_button.pack(side=tk.LEFT, padx=10)
-          # Game state
+        # Game state
         self.game = None
         self.player = None  # Will be set externally
         self.auto_playing = False
         self.games_paused = False
         self.next_move_pos = None  # Track next move position for highlighting
+        
+        # Start the web server in a background thread
+        self.server_thread = threading.Thread(target=start_server, daemon=True)
+        self.server_thread.start()
+        
+        # Give the server a moment to start
+        time.sleep(1)
+        
+        # Open the browser
+        webbrowser.open('http://127.0.0.1:5000')
+        
+        print("\n" + "="*60)
+        print("Web GUI started at http://127.0.0.1:5000")
+        print("The browser should open automatically.")
+        print("Starting games automatically...")
+        print("="*60 + "\n")
         
     def start_games(self):
         """Start the first game and begin auto-play"""
@@ -94,25 +50,8 @@ class BattleshipGUI:
         self.games_results = []
         self.games_paused = False
         self.auto_playing = True
+        set_running(True)
         self.start_new_game()
-        
-    def pause_games(self):
-        """Pause or resume the automatic game progression"""
-        self.games_paused = not self.games_paused
-        self.auto_playing = not self.games_paused
-        
-        if self.games_paused:
-            self.pause_button.config(text="Resume Games", bg="#e74c3c")
-            self.next_button.config(state="normal")
-        else:
-            self.pause_button.config(text="Pause Games", bg="#e67e22")
-            self.next_button.config(state="disabled")
-            # Resume auto-play if we're in the middle of a game or need to start next game
-            if self.game and not self.game.board.is_game_over():
-                self.auto_play_step()
-            elif self.current_game < self.num_games:
-                # Need to continue to next game
-                self.root.after(1, self.start_new_game)
         
     def start_new_game(self):
         """Start a new game"""
@@ -120,58 +59,22 @@ class BattleshipGUI:
         self.game = Game(self.player)
         self.game.setup_game()
         
-        # Update labels
-        self.game_label.config(text=f"Game {self.current_game} of {self.num_games}")
-        self.move_label.config(text="Move: 0")
-        
-        # Get the first move and highlight it
+        # Get the first move
         self.next_move_pos = self.player.make_move(self.game.board)
         
-        # Reset grid and show ships
-        self.update_grid()
+        # Update web display
+        self.update_web_display()
         
-        # Enable controls
-        self.start_button.config(state="disabled")
-        self.pause_button.config(state="normal")
-        if self.games_paused:
-            self.next_button.config(state="normal")
-        else:
-            self.next_button.config(state="disabled")
-            # Start auto-play immediately if not paused
-            self.root.after(1, self.auto_play_step)
-        
-    def update_grid(self):
-        """Update the visual grid"""
+    def update_web_display(self, last_move=None):
+        """Update the web display with current game state"""
         board_state = self.game.board.get_board_state()
-        
-        for row in range(10):
-            for col in range(10):
-                button = self.buttons[row][col]
-                
-                # Check if this position has been guessed
-                if board_state['guesses'][row][col]:
-                    if board_state['hits'][row][col]:
-                        # Hit
-                        button.config(bg="#e74c3c", text="HIT", fg="white")
-                    else:
-                        # Miss
-                        button.config(bg="#95a5a6", text="MISS", fg="black")
-                elif self.next_move_pos and (row, col) == self.next_move_pos:
-                    # Highlight next move in pink
-                    if board_state['grid'][row][col] != 0:
-                        # Ship present - pink with ship indicator
-                        button.config(bg="#ff69b4", text="NEXT", fg="white")
-                    else:
-                        # Water - pink highlight
-                        button.config(bg="#ff69b4", text="NEXT", fg="white")
-                else:
-                    # Show ships (for demonstration)
-                    if board_state['grid'][row][col] != 0:
-                        # Ship present
-                        button.config(bg="#2ecc71", text="SHIP", fg="white")
-                    else:
-                        # Water
-                        button.config(bg="#3498db", text="", fg="white")
+        update_game_state(
+            board_state,
+            self.current_game,
+            self.num_games,
+            self.game.move_count,
+            last_move
+        )
     
     def next_move(self):
         """Execute the next move"""
@@ -185,19 +88,20 @@ class BattleshipGUI:
             result = self.game.board.make_guess(row, col)
             self.game.move_count += 1
             
+            # Prepare last move info for display
+            last_move_info = {
+                'position': [row, col],
+                'result': result
+            }
+            
             # Plan the next move (if game continues)
             if not self.game.board.is_game_over():
                 self.next_move_pos = self.player.make_move(self.game.board)
             else:
                 self.next_move_pos = None
             
-            # Update display
-            self.move_label.config(text=f"Move: {self.game.move_count} - Last: ({row},{col}) = {result.upper()}")
-            self.update_grid()
-            
-            # Check if game is over
-            if self.game.board.is_game_over():
-                self.root.after(1, self.finish_current_game)  # Wait 1 second before finishing
+            # Update web display
+            self.update_web_display(last_move_info)
     
     def finish_current_game(self):
         """Finish the current game and start next or show results"""
@@ -208,21 +112,30 @@ class BattleshipGUI:
         }
         self.games_results.append(result)
         
-        if self.current_game < self.num_games and not self.games_paused:
-            # Automatically start next game if not paused
-            self.root.after(1, self.start_new_game)
-        elif self.current_game < self.num_games and self.games_paused:
-            # Game finished but paused - wait for user to resume
-            self.move_label.config(text=f"Game {self.current_game} completed in {self.game.move_count} moves. Paused.")
-        else:
+        print(f"Game {self.current_game} completed in {self.game.move_count} moves.")
+        
+        if self.current_game >= self.num_games:
             # All games finished, show results
+            self.auto_playing = False
             self.show_final_results()
+        else:
+            # Brief pause between games
+            time.sleep(0.5)
     
-    def auto_play_step(self):
-        """Execute one step of auto-play"""
-        if self.auto_playing and not self.games_paused and self.game and not self.game.board.is_game_over():
-            self.next_move()
-            self.root.after(1, self.auto_play_step)  # Continue instantly
+    def play_all_games(self):
+        """Play all games in a loop"""
+        while self.current_game < self.num_games and self.auto_playing and not self.games_paused:
+            # Start a new game
+            self.start_new_game()
+            
+            # Play through the entire game
+            while not self.game.board.is_game_over() and self.auto_playing and not self.games_paused:
+                self.next_move()
+                time.sleep(0.1)  # Small delay for smooth animation
+            
+            # Finish the current game
+            if self.game.board.is_game_over():
+                self.finish_current_game()
     
     def show_final_results(self):
         """Show final results of all games"""
@@ -234,29 +147,48 @@ class BattleshipGUI:
         worst_game = max(self.games_results, key=lambda x: x['moves'])
         average_moves = sum(move_counts) / len(move_counts)
         
-        result_text = f"""BATTLESHIP AUTOMATION RESULTS
-{'='*40}
+        result_text = f"""
+{'='*60}
+BATTLESHIP AUTOMATION RESULTS
+{'='*60}
 Total games played: {self.num_games}
 
 MOVE STATISTICS:
 Best game: {best_game['moves']} moves (Game #{best_game['game_number']})
 Worst game: {worst_game['moves']} moves (Game #{worst_game['game_number']})
 Average moves: {average_moves:.2f}
-{'='*40}"""
+{'='*60}
+"""
         
-        messagebox.showinfo("Game Results", result_text)
-        print(result_text)  # Also print to console
-          # Reset for new games
-        self.start_button.config(state="normal")
-        self.pause_button.config(state="disabled", text="Pause Games", bg="#e67e22")
-        self.next_button.config(state="disabled")
+        print(result_text)
+        
+        # Reset for new games
         self.auto_playing = False
         self.games_paused = False
         self.next_move_pos = None
+        set_running(False)
     
     def run(self):
-        """Start the GUI"""
-        self.root.mainloop()
+        """Start the GUI - automatically begins playing games"""
+        # Start games automatically
+        self.start_games()
+        
+        # Play all games
+        try:
+            self.play_all_games()
+        except KeyboardInterrupt:
+            print("\nGames interrupted by user.")
+            self.auto_playing = False
+            set_running(False)
+        
+        # Keep server running briefly to view final state
+        print("\nAll games complete. Press Ctrl+C to exit.")
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nExiting...")
+            set_running(False)
 
 def play_single_game(game_num, module_name, class_name, player_name):
     """Worker function to play a single game - designed for multiprocessing"""
