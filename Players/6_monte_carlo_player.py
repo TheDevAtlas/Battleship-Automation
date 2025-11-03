@@ -454,7 +454,9 @@ class OptimizedMonteCarloPlayer:
                     self.sunk_ships.append(i)
                     break
         
-        self.mode = "hunt"
+        # Only switch to hunt mode if there are no remaining unsunk hits
+        if not self.known_hits:
+            self.mode = "hunt"
         self.current_ship_hits = []
         self.target_stack = []
     

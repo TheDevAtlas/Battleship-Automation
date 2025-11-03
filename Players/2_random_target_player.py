@@ -51,7 +51,20 @@ class RandomTargetPlayer:
             sunk_coords = board.get_sunk_ship_coords(ship_id)
             if sunk_coords:
                 self.sunk_ship_coords.update(sunk_coords)
-            self.mode = "hunt"
+            
+            # Check if there are any remaining unsunk hits on the board
+            has_unsunk_hits = False
+            for r in range(board.size):
+                for c in range(board.size):
+                    if board.hits[r][c] and (r, c) not in self.sunk_ship_coords:
+                        has_unsunk_hits = True
+                        break
+                if has_unsunk_hits:
+                    break
+            
+            # Only switch to hunt mode if there are no remaining unsunk hits
+            if not has_unsunk_hits:
+                self.mode = "hunt"
             self.current_ship_hits = []
             self.target_stack = []
         
@@ -83,7 +96,20 @@ class RandomTargetPlayer:
             sunk_coords = board.get_sunk_ship_coords(ship_id)
             if sunk_coords:
                 self.sunk_ship_coords.update(sunk_coords)
-            self.mode = "hunt"
+            
+            # Check if there are any remaining unsunk hits on the board
+            has_unsunk_hits = False
+            for r in range(board.size):
+                for c in range(board.size):
+                    if board.hits[r][c] and (r, c) not in self.sunk_ship_coords:
+                        has_unsunk_hits = True
+                        break
+                if has_unsunk_hits:
+                    break
+            
+            # Only switch to hunt mode if there are no remaining unsunk hits
+            if not has_unsunk_hits:
+                self.mode = "hunt"
             self.current_ship_hits = []
             self.target_stack = []
         

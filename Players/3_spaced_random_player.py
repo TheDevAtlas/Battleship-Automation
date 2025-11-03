@@ -149,7 +149,19 @@ class SpacedRandomPlayer:
                     self.sunk_ships.append(i)
                     break
         
-        self.mode = "hunt"
+        # Check if there are any remaining unsunk hits on the board
+        has_unsunk_hits = False
+        for row in range(board.size):
+            for col in range(board.size):
+                if board.hits[row][col] and (row, col) not in self.sunk_ship_coords:
+                    has_unsunk_hits = True
+                    break
+            if has_unsunk_hits:
+                break
+        
+        # Only switch to hunt mode if there are no remaining unsunk hits
+        if not has_unsunk_hits:
+            self.mode = "hunt"
         self.current_ship_hits = []
         self.target_stack = []
     
