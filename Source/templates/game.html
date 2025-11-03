@@ -249,7 +249,8 @@
 
         <div class="status-bar">
             <span style="color: #888;">Gray = Unknown</span> | 
-            <span style="color: #66ff66;">Green = High Probability</span> | 
+            <span style="color: #ff8c00;">Bright Orange = High Probability</span> | 
+            <span style="color: #a020f0;">Purple/Magenta = Low Probability</span> | 
             <span style="color: #ff4d6d;">Red = Hit</span> | 
             <span style="color: #8b0000;">Dark Red = Sunk</span> | 
             <span style="color: #3a3a3a;">Dark = Miss</span>
@@ -307,20 +308,40 @@
                         // Add the appropriate class
                         cellEl.classList.add(cellData.state);
                         
-                        // Apply probability visualization for unknown cells
-                        if (cellData.state === 'unknown' && cellData.probability !== undefined && cellData.probability > 0) {
+                        // Apply probability visualization for ALL unknown cells (even with 0 probability)
+                        if (cellData.state === 'unknown' && cellData.probability !== undefined) {
                             // Normalize probability to 0-1 range for visualization
-                            const intensity = Math.min(cellData.probability, 1.0);
+                            const intensity = Math.min(Math.max(cellData.probability, 0), 1.0);
                             
-                            // Create green gradient based on probability
-                            // Light green (low probability) to bright green (high probability)
-                            const greenValue = Math.floor(50 + (intensity * 205)); // 50-255
-                            const bgColor = `rgb(${Math.floor(greenValue * 0.3)}, ${greenValue}, ${Math.floor(greenValue * 0.4)})`;
+                            // Create color gradient from very light purple (0) to dark purple/magenta (low) to bright orange (high)
+                            let r, g, b;
+                            
+                            if (intensity === 0) {
+                                // No probability: very light purple/gray
+                                r = 90;
+                                g = 80;
+                                b = 110;
+                            } else if (intensity < 0.5) {
+                                // Low probability: light purple to dark purple/magenta
+                                const t = intensity * 2; // 0 to 1
+                                r = Math.floor(90 + t * 110);  // 90 to 200
+                                g = Math.floor(80 + t * 0);    // 80 to 80 (stay low)
+                                b = Math.floor(110 + t * 90);  // 110 to 200
+                            } else {
+                                // High probability: magenta to bright orange
+                                const t = (intensity - 0.5) * 2; // 0 to 1
+                                r = Math.floor(200 + t * 55);  // 200 to 255
+                                g = Math.floor(80 + t * 60);   // 80 to 140
+                                b = Math.floor(200 - t * 200); // 200 to 0
+                            }
+                            
+                            const bgColor = `rgb(${r}, ${g}, ${b})`;
                             
                             cellEl.style.backgroundColor = bgColor;
                             cellEl.classList.add('probability');
-                        } else if (cellData.state === 'unknown') {
-                            // Reset to default unknown color
+                        } else {
+                            // For all other cells (miss, hit, sunk),
+                            // explicitly clear the inline background color to let CSS classes take over
                             cellEl.style.backgroundColor = '';
                         }
                     });

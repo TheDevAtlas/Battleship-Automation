@@ -24,11 +24,11 @@ class ProbabilityPlayer:
         self.ship_sizes = [5, 4, 3, 3, 2]  # Known ship sizes
         self.sunk_ships = []  # Track which ships have been sunk (indices)
         self.board_size = 10
-        self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
+        self.probability_map = None
         
     def make_move(self, board: Board) -> Tuple[int, int]:
         """Make a move based on probability mapping and current strategy"""
-        # Update probability map based on current board state
+        # ALWAYS update probability map based on current board state for GUI display
         self._update_probability_map(board)
         
         if self.mode == "target" and self.target_stack:
@@ -174,9 +174,7 @@ class ProbabilityPlayer:
         if not self.target_stack:
             return self._hunt_move(board)
         
-        # Update probability map even in target mode for visualization
-        self._update_probability_map(board)
-        
+        # Probability map is already updated in make_move(), so we can use it directly
         # Among targets in the stack, choose the one with highest probability
         best_target = None
         best_prob = -1
@@ -338,4 +336,4 @@ class ProbabilityPlayer:
         self.current_ship_hits = []
         self.sunk_ship_coords = set()
         self.sunk_ships = []
-        self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
+        self.probability_map = None

@@ -51,6 +51,10 @@ class OptimizedMonteCarloPlayer:
         """Make a move based on Monte Carlo sampling and current strategy"""
         self._update_state(board)
         
+        # ALWAYS run Monte Carlo simulations to generate probability map for GUI display
+        heat_map = self._monte_carlo_simulations_optimized(board)
+        self.probability_map = heat_map
+        
         if self.mode == "target" and self.target_stack:
             return self._target_move(board)
         else:
@@ -79,11 +83,8 @@ class OptimizedMonteCarloPlayer:
         """Make a Monte Carlo-guided hunt move with optimized simulations"""
         self.mode = "hunt"
         
-        # Run optimized Monte Carlo simulations
-        heat_map = self._monte_carlo_simulations_optimized(board)
-        
-        # Store as probability_map for visualization
-        self.probability_map = heat_map
+        # Probability map already generated in make_move(), use it directly
+        heat_map = self.probability_map
         
         valid_moves = board.get_valid_moves()
         if not valid_moves:
@@ -232,15 +233,15 @@ class OptimizedMonteCarloPlayer:
         return True
     
     def _target_move(self, board: Board) -> Tuple[int, int]:
-        """Make an intelligent target move - same logic as original"""
+        """Make an intelligent target move - uses full Monte Carlo probability map"""
         if not self.target_stack:
             return self._hunt_move(board)
         
-        # Create a probability map for target mode visualization
-        self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
+        # Probability map already generated in make_move() with full Monte Carlo simulations
+        # Now we combine it with target scoring for better decisions
         
         best_target = None
-        best_score = -float('inf')
+        best_combined_score = -float('inf')
         best_index = -1
         
         for i, target in enumerate(self.target_stack):
@@ -249,12 +250,17 @@ class OptimizedMonteCarloPlayer:
             if board.guesses[row][col]:
                 continue
             
-            score = self._score_target_move(board, target)
-            # Update probability map with target scores
-            self.probability_map[row][col] = score
+            # Get Monte Carlo probability for this position
+            mc_probability = self.probability_map[row][col] if self.probability_map is not None else 0.0
             
-            if score > best_score:
-                best_score = score
+            # Get tactical target score
+            target_score = self._score_target_move(board, target)
+            
+            # Combine both scores: 40% Monte Carlo probability, 60% tactical targeting
+            combined_score = 0.4 * mc_probability + 0.6 * target_score
+            
+            if combined_score > best_combined_score:
+                best_combined_score = combined_score
                 best_target = target
                 best_index = i
         

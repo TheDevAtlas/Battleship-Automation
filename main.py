@@ -68,12 +68,19 @@ class BattleshipGUI:
     def update_web_display(self, last_move=None):
         """Update the web display with current game state"""
         board_state = self.game.board.get_board_state()
+        
+        # Get probability map from player if available
+        probability_map = None
+        if hasattr(self.player, 'probability_map') and self.player.probability_map is not None:
+            probability_map = self.player.probability_map
+        
         update_game_state(
             board_state,
             self.current_game,
             self.num_games,
             self.game.move_count,
-            last_move
+            last_move,
+            probability_map
         )
     
     def next_move(self):
