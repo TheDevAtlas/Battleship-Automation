@@ -28,6 +28,8 @@ class ProbabilityPlayer:
         
     def make_move(self, board: Board) -> Tuple[int, int]:
         """Make a move based on probability mapping and current strategy"""
+        # Sync with board so we don't drop target mode if unsunk hits remain
+        self._sync_from_board(board)
         # ALWAYS update probability map based on current board state for GUI display
         self._update_probability_map(board)
         
@@ -37,7 +39,7 @@ class ProbabilityPlayer:
             return self._hunt_move(board)
     
     def _update_probability_map(self, board: Board):
-        """Generate a probability map based on where ships can fit - OPTIMIZED"""
+        """Generate a probability map based on where ships can fit - JavaScript HTML logic"""
         self.probability_map = np.zeros((self.board_size, self.board_size), dtype=float)
         
         # Get remaining ship sizes using list comprehension (faster)
@@ -46,34 +48,37 @@ class ProbabilityPlayer:
         if not remaining_ships:
             return
         
-        # Cache board arrays to avoid repeated attribute lookups
-        guesses = board.guesses
-        hits = board.hits
-        sunk_coords = self.sunk_ship_coords
+        # Build misses set: guessed cells that are NOT hits
+        misses = set()
+        for row in range(self.board_size):
+            for col in range(self.board_size):
+                if board.guesses[row][col] and not board.hits[row][col]:
+                    misses.add((row, col))
         
-        # For each remaining ship, calculate where it could fit
+        # For each remaining ship, count all valid placements
         for ship_size in remaining_ships:
-            # Try horizontal placements - inlined for speed
+            # Try horizontal placements
             for row in range(self.board_size):
                 for col in range(self.board_size - ship_size + 1):
+                    # Check if ship can fit horizontally (only blocked by misses)
                     can_fit = True
-                    # Check if ship can fit horizontally
                     for c in range(col, col + ship_size):
-                        if (guesses[row][c] and not hits[row][c]) or (row, c) in sunk_coords:
+                        if (row, c) in misses:
                             can_fit = False
                             break
                     
                     if can_fit:
-                        # Use numpy slice assignment for speed
-                        self.probability_map[row, col:col+ship_size] += 1.0
+                        # Increment probability for all cells this placement covers
+                        for c in range(col, col + ship_size):
+                            self.probability_map[row, c] += 1.0
             
-            # Try vertical placements - inlined for speed
+            # Try vertical placements
             for row in range(self.board_size - ship_size + 1):
                 for col in range(self.board_size):
+                    # Check if ship can fit vertically (only blocked by misses)
                     can_fit = True
-                    # Check if ship can fit vertically
                     for r in range(row, row + ship_size):
-                        if (guesses[r][col] and not hits[r][col]) or (r, col) in sunk_coords:
+                        if (r, col) in misses:
                             can_fit = False
                             break
                     
@@ -81,20 +86,11 @@ class ProbabilityPlayer:
                         for r in range(row, row + ship_size):
                             self.probability_map[r, col] += 1.0
         
-        # Boost probability around known hits - inlined for speed
+        # Zero out already guessed positions (we don't guess the same cell twice)
         for row in range(self.board_size):
             for col in range(self.board_size):
-                if hits[row][col] and (row, col) not in sunk_coords:
-                    # Boost adjacent cells
-                    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                        new_row, new_col = row + dr, col + dc
-                        if (0 <= new_row < self.board_size and 0 <= new_col < self.board_size and
-                            not guesses[new_row][new_col]):
-                            self.probability_map[new_row, new_col] += 5.0
-        
-        # Zero out already guessed positions using numpy boolean indexing
-        guessed_mask = np.array(guesses, dtype=bool)
-        self.probability_map[guessed_mask] = 0
+                if board.guesses[row][col]:
+                    self.probability_map[row, col] = 0
     
     def _get_smallest_remaining_ship(self) -> int:
         """Get the size of the smallest ship that hasn't been sunk yet"""
@@ -132,6 +128,17 @@ class ProbabilityPlayer:
                 raise ValueError("No valid moves available")
             spaced_candidates = valid_moves
         
+        # Enforce choosing only from cells that have non-zero probability if available
+        positive_candidates = [m for m in spaced_candidates if self.probability_map[m[0], m[1]] > 0]
+        if positive_candidates:
+            spaced_candidates = positive_candidates
+        else:
+            # If none of the spaced candidates have probability, try any non-zero cell on the board
+            any_positive = [(r, c) for r in range(self.board_size) for c in range(self.board_size)
+                            if not board.guesses[r][c] and self.probability_map[r, c] > 0]
+            if any_positive:
+                spaced_candidates = any_positive
+        
         # Among spaced candidates, choose the one with highest probability
         best_move = None
         best_prob = -1
@@ -143,8 +150,8 @@ class ProbabilityPlayer:
                 best_prob = prob
                 best_move = move
         
-        # If all probabilities are equal (or zero), choose randomly
-        if best_prob == 0 or best_move is None:
+        # If no differentiation, choose randomly among candidates
+        if best_move is None:
             best_move = random.choice(spaced_candidates)
         else:
             # Add some randomness: choose from top 20% of moves
@@ -186,6 +193,9 @@ class ProbabilityPlayer:
                 continue  # Skip already guessed positions
             
             prob = self.probability_map[row, col]
+            # Skip positions that have zero probability if any positive exist
+            if prob <= 0:
+                continue
             if prob > best_prob:
                 best_prob = prob
                 best_target = target
@@ -231,21 +241,35 @@ class ProbabilityPlayer:
                     self.sunk_ships.append(i)
                     break
         
+        # Remove sunk ship coordinates from current tracking
+        self.current_ship_hits = [hit for hit in self.current_ship_hits if hit not in self.sunk_ship_coords]
+        self.target_stack = [target for target in self.target_stack if target not in self.sunk_ship_coords]
+        
         # Check if there are any remaining unsunk hits on the board
         has_unsunk_hits = False
+        unsunk_hit_coords = []
         for row in range(self.board_size):
             for col in range(self.board_size):
                 if board.hits[row][col] and (row, col) not in self.sunk_ship_coords:
                     has_unsunk_hits = True
-                    break
-            if has_unsunk_hits:
-                break
+                    unsunk_hit_coords.append((row, col))
         
-        # Only switch to hunt mode if there are no remaining unsunk hits
-        if not has_unsunk_hits:
+        # THIS IS NOT WORKING, THERE ARE SPACES ON THE BOARD THAT ARE STILL HITS. PLEASE MAKE SURE THAT THIS IS WORKING
+        # If there are unsunk hits, stay in target mode and rebuild target stack
+        if has_unsunk_hits:
+            self.mode = "target"
+            # Clear current ship hits and target stack, rebuild from unsunk hits
+            self.current_ship_hits = unsunk_hit_coords.copy()
+            self.target_stack = []
+            
+            # Add adjacent cells of all unsunk hits to target stack
+            for hit_coord in unsunk_hit_coords:
+                self._add_adjacent_targets(board, hit_coord[0], hit_coord[1])
+        else:
+            # No unsunk hits remaining, switch to hunt mode
             self.mode = "hunt"
-        self.current_ship_hits = []
-        self.target_stack = []
+            self.current_ship_hits = []
+            self.target_stack = []
     
     def _simulate_move_result(self, board: Board, row: int, col: int) -> str:
         """Simulate what the result of a move would be without actually making it"""
@@ -349,3 +373,43 @@ class ProbabilityPlayer:
         self.sunk_ship_coords = set()
         self.sunk_ships = []
         self.probability_map = None
+
+    # ---------------------- helpers to maintain target mode correctly ----------------------
+    def _sync_from_board(self, board: Board):
+        """Refresh sunk coords and rebuild targets if needed before choosing a move."""
+        self._refresh_sunk_coords(board)
+        if not self.target_stack:
+            self._rebuild_targets_from_unsunk_hits(board)
+
+    def _refresh_sunk_coords(self, board: Board):
+        sunk = set()
+        for ship in board.ships:
+            if ship.get('sunk', False):
+                for coord in ship.get('coords', []):
+                    sunk.add(tuple(coord))
+        self.sunk_ship_coords = sunk
+
+    def _rebuild_targets_from_unsunk_hits(self, board: Board):
+        unsunk_hit_coords = []
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if board.hits[r][c] and (r, c) not in self.sunk_ship_coords:
+                    unsunk_hit_coords.append((r, c))
+        if unsunk_hit_coords:
+            self.mode = "target"
+            self.current_ship_hits = list(unsunk_hit_coords)
+            self.target_stack = []
+            for hr, hc in unsunk_hit_coords:
+                self._add_adjacent_targets(board, hr, hc)
+            # Deduplicate while preserving order and skipping guessed/sunk
+            seen = set()
+            deduped = []
+            for t in self.target_stack:
+                if t not in seen and not board.guesses[t[0]][t[1]] and t not in self.sunk_ship_coords:
+                    seen.add(t)
+                    deduped.append(t)
+            self.target_stack = deduped
+        else:
+            # Only drop to hunt if no unsunk hits
+            self.mode = "hunt"
+            self.current_ship_hits = []

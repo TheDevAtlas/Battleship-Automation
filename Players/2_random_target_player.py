@@ -15,6 +15,8 @@ class RandomTargetPlayer:
         
     def make_move(self, board: Board) -> Tuple[int, int]:
         """Make a move based on current strategy (hunt or target)"""
+        # Sync state with the actual board before deciding
+        self._sync_from_board(board)
         if self.mode == "target" and self.target_stack:
             return self._target_move(board)
         else:
@@ -46,27 +48,8 @@ class RandomTargetPlayer:
             self.current_ship_hits = [(row, col)]
             self._add_adjacent_targets(board, row, col)
         elif result == "sunk":
-            # Ship was sunk with this hit, get the ship coordinates
-            ship_id = board.grid[row][col]
-            sunk_coords = board.get_sunk_ship_coords(ship_id)
-            if sunk_coords:
-                self.sunk_ship_coords.update(sunk_coords)
-            
-            # Check if there are any remaining unsunk hits on the board
-            has_unsunk_hits = False
-            for r in range(board.size):
-                for c in range(board.size):
-                    if board.hits[r][c] and (r, c) not in self.sunk_ship_coords:
-                        has_unsunk_hits = True
-                        break
-                if has_unsunk_hits:
-                    break
-            
-            # Only switch to hunt mode if there are no remaining unsunk hits
-            if not has_unsunk_hits:
-                self.mode = "hunt"
-            self.current_ship_hits = []
-            self.target_stack = []
+            # Predicted sink: rebuild targets from any other unsunk hits
+            self._rebuild_targets_from_unsunk_hits(board)
         
         return (row, col)
     
@@ -91,27 +74,8 @@ class RandomTargetPlayer:
             if len(self.current_ship_hits) >= 2:
                 self._focus_on_ship_line(board)
         elif result == "sunk":
-            # Ship was sunk
-            ship_id = board.grid[row][col]
-            sunk_coords = board.get_sunk_ship_coords(ship_id)
-            if sunk_coords:
-                self.sunk_ship_coords.update(sunk_coords)
-            
-            # Check if there are any remaining unsunk hits on the board
-            has_unsunk_hits = False
-            for r in range(board.size):
-                for c in range(board.size):
-                    if board.hits[r][c] and (r, c) not in self.sunk_ship_coords:
-                        has_unsunk_hits = True
-                        break
-                if has_unsunk_hits:
-                    break
-            
-            # Only switch to hunt mode if there are no remaining unsunk hits
-            if not has_unsunk_hits:
-                self.mode = "hunt"
-            self.current_ship_hits = []
-            self.target_stack = []
+            # Predicted sink: rebuild targets from any other unsunk hits
+            self._rebuild_targets_from_unsunk_hits(board)
         
         return (row, col)
     
@@ -196,3 +160,53 @@ class RandomTargetPlayer:
         self.target_stack = []
         self.current_ship_hits = []
         self.sunk_ship_coords = set()
+
+    # ---------------------- helpers to maintain target mode correctly ----------------------
+    def _sync_from_board(self, board: Board):
+        """Keep sunk coordinates up-to-date and ensure we don't drop target mode
+        when there are still unsunk hits on the board."""
+        # Refresh sunk ship coordinates from board state
+        self._refresh_sunk_coords(board)
+
+        # If we have no targets but there are unsunk hits, rebuild targets
+        if not self.target_stack:
+            self._rebuild_targets_from_unsunk_hits(board)
+
+    def _refresh_sunk_coords(self, board: Board):
+        sunk = set()
+        for ship in board.ships:
+            if ship.get('sunk', False):
+                for coord in ship.get('coords', []):
+                    sunk.add(tuple(coord))
+        self.sunk_ship_coords = sunk
+
+    def _rebuild_targets_from_unsunk_hits(self, board: Board):
+        """If there are any hits not belonging to sunk ships, stay in target mode
+        and rebuild target stack around those hits. Otherwise, go to hunt mode."""
+        # Ensure sunk coords are current
+        self._refresh_sunk_coords(board)
+
+        unsunk_hits = []
+        for r in range(board.size):
+            for c in range(board.size):
+                if board.hits[r][c] and (r, c) not in self.sunk_ship_coords:
+                    unsunk_hits.append((r, c))
+
+        if unsunk_hits:
+            self.mode = "target"
+            self.current_ship_hits = list(unsunk_hits)
+            self.target_stack = []
+            for hr, hc in unsunk_hits:
+                self._add_adjacent_targets(board, hr, hc)
+            # De-duplicate while preserving order
+            seen = set()
+            deduped = []
+            for t in self.target_stack:
+                if t not in seen and not board.guesses[t[0]][t[1]] and t not in self.sunk_ship_coords:
+                    seen.add(t)
+                    deduped.append(t)
+            self.target_stack = deduped
+        else:
+            self.mode = "hunt"
+            self.current_ship_hits = []
+            # keep target_stack empty

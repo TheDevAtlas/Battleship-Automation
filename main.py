@@ -100,6 +100,27 @@ class BattleshipGUI:
                 'position': [row, col],
                 'result': result
             }
+
+            # If sunk, add extra details and print to console
+            if result == 'sunk':
+                ship_id = self.game.board.grid[row][col]
+                sunk_size = None
+                for ship in self.game.board.ships:
+                    if ship['id'] == ship_id:
+                        sunk_size = ship.get('size')
+                        break
+                # Map size to name (for display)
+                size_to_names = {5:['Carrier'],4:['Battleship'],3:['Cruiser','Submarine'],2:['Destroyer']}
+                name = None
+                if sunk_size in size_to_names:
+                    # Choose first available label for console purposes
+                    name = size_to_names[sunk_size][0]
+                if name:
+                    print(f"SUNK: {name} (size {sunk_size}) at ({row}, {col})")
+                else:
+                    print(f"SUNK: Ship size {sunk_size} at ({row}, {col})")
+                last_move_info['sunk_size'] = sunk_size
+                last_move_info['sunk_name'] = name
             
             # Plan the next move (if game continues)
             if not self.game.board.is_game_over():

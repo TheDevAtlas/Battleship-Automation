@@ -3,28 +3,22 @@ import numpy as np
 from typing import Tuple, List, Set, Optional, Dict
 from Source.board import Board
 from collections import defaultdict
-from functools import lru_cache
-import numba
-from numba import jit, prange, njit
 
 class OptimizedMonteCarloPlayer:
-    """An optimized Monte Carlo player using JIT compilation and vectorization.
+    """A Monte Carlo player using true random board sampling.
     
-    This player maintains the same search depth as MonteCarloPlayer but runs MUCH faster by:
-    1. Using Numba JIT compilation for hot paths (simulation logic) - 3-5x speedup
-    2. Vectorized NumPy operations wherever possible - 2x speedup
-    3. Parallel execution of simulations using Numba's prange - 4-6x speedup
-    4. Caching entropy calculations for repeated positions
-    5. Pre-computing valid placement positions
-    6. Optimized memory access patterns
+    This player uses the same Monte Carlo occupancy sampling algorithm as the JavaScript HTML version:
+    1. Randomly samples valid complete board configurations
+    2. Counts how often each cell is occupied across all successful samples
+    3. Uses these occupancy counts to guide move selection
+    4. Respects known misses and avoids overlapping ships in samples
     
-    Performance improvements:
-    - 3-5x speedup from JIT compilation of critical simulation code
-    - 4-6x speedup from parallel execution (prange)
-    - 2x speedup from vectorized operations
-    - Total expected speedup: 10-30x faster while maintaining identical logic
-    
-    Note: This version avoids nested multiprocessing (compatible with main.py's Pool)
+    The algorithm:
+    - For each simulation, attempts to place all remaining ships randomly
+    - Ships are placed in order from largest to smallest for better success rate
+    - Only placements that avoid known misses and don't overlap are accepted
+    - Failed placements are rejected and don't contribute to the heat map
+    - Final probability map shows relative occupancy frequency across samples
     """
     
     def __init__(self, name: str = "Optimized Monte Carlo Player", num_simulations: int = 300):
@@ -49,12 +43,22 @@ class OptimizedMonteCarloPlayer:
         
     def make_move(self, board: Board) -> Tuple[int, int]:
         """Make a move based on Monte Carlo sampling and current strategy"""
+        # Keep sunk coords and known hits in sync before scoring moves
+        self._refresh_sunk_coords(board)
         self._update_state(board)
         
         # ALWAYS run Monte Carlo simulations to generate probability map for GUI display
         heat_map = self._monte_carlo_simulations_optimized(board)
         self.probability_map = heat_map
         
+        # If there are unsunk hits but our target stack is empty, rebuild it now
+        if not self.target_stack and self.known_hits:
+            self.mode = "target"
+            self.current_ship_hits = list(self.known_hits)
+            self.target_stack = []
+            for hr, hc in self.known_hits:
+                self._add_intelligent_targets(board, hr, hc)
+
         if self.mode == "target" and self.target_stack:
             return self._target_move(board)
         else:
@@ -95,6 +99,16 @@ class OptimizedMonteCarloPlayer:
         spaced_moves = self._generate_spaced_candidates(valid_moves, smallest_ship)
         candidate_moves = spaced_moves if spaced_moves else valid_moves
         
+        # Enforce choosing only cells with non-zero Monte Carlo occupancy if any exist
+        positive_moves = [m for m in candidate_moves if heat_map[m[0], m[1]] > 0]
+        if positive_moves:
+            candidate_moves = positive_moves
+        else:
+            any_positive = [(r, c) for r in range(self.board_size) for c in range(self.board_size)
+                            if not board.guesses[r][c] and heat_map[r, c] > 0]
+            if any_positive:
+                candidate_moves = any_positive
+        
         # Vectorized scoring of all candidates at once
         entropy_scores = self._calculate_entropy_batch(board, candidate_moves)
         
@@ -133,33 +147,110 @@ class OptimizedMonteCarloPlayer:
         return (row, col)
     
     def _monte_carlo_simulations_optimized(self, board: Board) -> np.ndarray:
-        """Run Monte Carlo simulations using JIT-compiled parallel code"""
+        """Run Monte Carlo simulations using true random board sampling (JavaScript HTML logic)"""
         remaining_ships = [size for i, size in enumerate(self.ship_sizes) if i not in self.sunk_ships]
         
         if not remaining_ships:
             return np.zeros((self.board_size, self.board_size), dtype=float)
         
-        # Prepare data for JIT-compiled function
-        known_misses_array = np.array(list(self.known_misses), dtype=np.int32) if self.known_misses else np.array([], dtype=np.int32).reshape(0, 2)
-        sunk_coords_array = np.array(list(self.sunk_ship_coords), dtype=np.int32) if self.sunk_ship_coords else np.array([], dtype=np.int32).reshape(0, 2)
-        known_hits_array = np.array(list(self.known_hits), dtype=np.int32) if self.known_hits else np.array([], dtype=np.int32).reshape(0, 2)
-        remaining_ships_array = np.array(remaining_ships, dtype=np.int32)
+        # Build misses set from board state
+        misses = set()
+        for row in range(self.board_size):
+            for col in range(self.board_size):
+                if board.guesses[row][col] and not board.hits[row][col]:
+                    misses.add((row, col))
         
-        # Run JIT-compiled parallel simulations
-        heat_map, successful_sims = _run_parallel_simulations(
-            self.num_simulations,
-            self.board_size,
-            remaining_ships_array,
-            known_misses_array,
-            sunk_coords_array,
-            known_hits_array
-        )
+        # Add sunk ship coordinates to misses (they block future placements)
+        misses.update(self.sunk_ship_coords)
         
-        # Normalize
-        if successful_sims > 0:
-            heat_map = heat_map.astype(float) / successful_sims
+        # Run Monte Carlo sampling
+        occupancy_map = np.zeros((self.board_size, self.board_size), dtype=int)
+        accepted_samples = 0
+        
+        for _ in range(self.num_simulations):
+            placement = self._sample_board_consistent_with(remaining_ships, misses)
+            if placement is not None:
+                accepted_samples += 1
+                # Count occupancy for each cell in this placement
+                for ship_cells in placement:
+                    for row, col in ship_cells:
+                        occupancy_map[row, col] += 1
+        
+        # Normalize to get probability map
+        if accepted_samples > 0:
+            heat_map = occupancy_map.astype(float) / accepted_samples
+        else:
+            heat_map = occupancy_map.astype(float)
         
         return heat_map
+    
+    def _sample_board_consistent_with(self, ships: List[int], misses: Set[Tuple[int, int]]) -> Optional[List[List[Tuple[int, int]]]]:
+        """Sample a complete valid board configuration (JavaScript HTML logic).
+        
+        Returns a list of ship placements (each ship is a list of (row, col) coordinates),
+        or None if placement fails.
+        """
+        # Create temporary board to track occupancy
+        board = np.zeros((self.board_size, self.board_size), dtype=bool)
+        
+        # Sort ships largest to smallest for better placement success
+        ordered_ships = sorted(ships, reverse=True)
+        placements = []
+        
+        for ship_size in ordered_ships:
+            placed = False
+            max_attempts = 1024
+            
+            for attempt in range(max_attempts):
+                # Random position and orientation
+                horizontal = random.choice([True, False])
+                
+                if horizontal:
+                    row = random.randint(0, self.board_size - 1)
+                    col = random.randint(0, self.board_size - ship_size)
+                    
+                    # Check if can place (not in misses, not overlapping)
+                    can_place = True
+                    cells = []
+                    for c in range(col, col + ship_size):
+                        if (row, c) in misses or board[row, c]:
+                            can_place = False
+                            break
+                        cells.append((row, c))
+                    
+                    if can_place:
+                        # Place the ship
+                        for r, c in cells:
+                            board[r, c] = True
+                        placements.append(cells)
+                        placed = True
+                        break
+                else:
+                    row = random.randint(0, self.board_size - ship_size)
+                    col = random.randint(0, self.board_size - 1)
+                    
+                    # Check if can place (not in misses, not overlapping)
+                    can_place = True
+                    cells = []
+                    for r in range(row, row + ship_size):
+                        if (r, col) in misses or board[r, col]:
+                            can_place = False
+                            break
+                        cells.append((r, col))
+                    
+                    if can_place:
+                        # Place the ship
+                        for r, c in cells:
+                            board[r, c] = True
+                        placements.append(cells)
+                        placed = True
+                        break
+            
+            if not placed:
+                # Failed to place this ship, reject this sample
+                return None
+        
+        return placements
     
     def _calculate_entropy_batch(self, board: Board, moves: List[Tuple[int, int]]) -> Dict[Tuple[int, int], float]:
         """Calculate entropy for multiple moves in batch - optimized"""
@@ -168,14 +259,15 @@ class OptimizedMonteCarloPlayer:
         if not remaining_ships:
             return {move: 0.0 for move in moves}
         
-        # Pre-compute valid ship placements for each ship size
-        # This avoids redundant checks across moves
-        entropy_scores = {}
+        # Build misses set
+        misses = set()
+        for row in range(self.board_size):
+            for col in range(self.board_size):
+                if board.guesses[row][col] and not board.hits[row][col]:
+                    misses.add((row, col))
+        misses.update(self.sunk_ship_coords)
         
-        # Convert board state to numpy for faster checks
-        guesses_array = np.array(board.guesses, dtype=bool)
-        hits_array = np.array(board.hits, dtype=bool)
-        sunk_coords_set = self.sunk_ship_coords
+        entropy_scores = {}
         
         for move in moves:
             row, col = move
@@ -185,49 +277,31 @@ class OptimizedMonteCarloPlayer:
             for ship_size in remaining_ships:
                 # Horizontal configurations
                 for start_col in range(max(0, col - ship_size + 1), min(self.board_size - ship_size + 1, col + 1)):
-                    if self._can_fit_ship_fast(guesses_array, hits_array, sunk_coords_set, 
-                                               row, start_col, ship_size, True):
+                    if self._can_place_ship(row, start_col, ship_size, True, misses):
                         entropy += 1.0
                 
                 # Vertical configurations
                 for start_row in range(max(0, row - ship_size + 1), min(self.board_size - ship_size + 1, row + 1)):
-                    if self._can_fit_ship_fast(guesses_array, hits_array, sunk_coords_set,
-                                               start_row, col, ship_size, False):
+                    if self._can_place_ship(start_row, col, ship_size, False, misses):
                         entropy += 1.0
             
             entropy_scores[move] = entropy
         
         return entropy_scores
     
-    def _can_fit_ship_fast(self, guesses: np.ndarray, hits: np.ndarray, 
-                          sunk_coords: Set[Tuple[int, int]], 
-                          row: int, col: int, size: int, horizontal: bool) -> bool:
-        """Fast check if ship can fit - using numpy operations"""
+    def _can_place_ship(self, row: int, col: int, size: int, horizontal: bool, misses: Set[Tuple[int, int]]) -> bool:
+        """Check if ship can fit at given position"""
         if horizontal:
             if col + size > self.board_size:
                 return False
-            # Check all positions at once
-            row_guesses = guesses[row, col:col+size]
-            row_hits = hits[row, col:col+size]
-            # If any position is a miss, can't fit
-            if np.any(row_guesses & ~row_hits):
-                return False
-            # Check sunk coords
             for c in range(col, col + size):
-                if (row, c) in sunk_coords:
+                if (row, c) in misses:
                     return False
         else:
             if row + size > self.board_size:
                 return False
-            # Check all positions at once
-            col_guesses = guesses[row:row+size, col]
-            col_hits = hits[row:row+size, col]
-            # If any position is a miss, can't fit
-            if np.any(col_guesses & ~col_hits):
-                return False
-            # Check sunk coords
             for r in range(row, row + size):
-                if (r, col) in sunk_coords:
+                if (r, col) in misses:
                     return False
         
         return True
@@ -252,6 +326,9 @@ class OptimizedMonteCarloPlayer:
             
             # Get Monte Carlo probability for this position
             mc_probability = self.probability_map[row][col] if self.probability_map is not None else 0.0
+            # Skip cells with zero MC probability if there are other options
+            if mc_probability <= 0:
+                continue
             
             # Get tactical target score
             target_score = self._score_target_move(board, target)
@@ -454,11 +531,25 @@ class OptimizedMonteCarloPlayer:
                     self.sunk_ships.append(i)
                     break
         
-        # Only switch to hunt mode if there are no remaining unsunk hits
-        if not self.known_hits:
+        # Remove sunk ship coordinates from current tracking
+        self.current_ship_hits = [hit for hit in self.current_ship_hits if hit not in self.sunk_ship_coords]
+        self.target_stack = [target for target in self.target_stack if target not in self.sunk_ship_coords]
+        
+        # If there are still unsunk hits, stay in target mode and rebuild target stack
+        if self.known_hits:
+            self.mode = "target"
+            # Rebuild current ship hits from known unsunk hits
+            self.current_ship_hits = list(self.known_hits)
+            self.target_stack = []
+            
+            # Add adjacent cells of all unsunk hits to target stack
+            for hit_coord in self.known_hits:
+                self._add_intelligent_targets(board, hit_coord[0], hit_coord[1])
+        else:
+            # No unsunk hits remaining, switch to hunt mode
             self.mode = "hunt"
-        self.current_ship_hits = []
-        self.target_stack = []
+            self.current_ship_hits = []
+            self.target_stack = []
     
     def _simulate_move_result(self, board: Board, row: int, col: int) -> str:
         """Simulate what the result of a move would be"""
@@ -502,139 +593,12 @@ class OptimizedMonteCarloPlayer:
         self.entropy_map = None
         self._entropy_cache.clear()
 
+    # ---------------------- helpers to maintain target mode correctly ----------------------
+    def _refresh_sunk_coords(self, board: Board):
+        sunk = set()
+        for ship in board.ships:
+            if ship.get('sunk', False):
+                for coord in ship.get('coords', []):
+                    sunk.add(tuple(coord))
+        self.sunk_ship_coords = sunk
 
-# ============================================================================
-# OPTIMIZED WORKER FUNCTIONS - JIT COMPILED FOR MAXIMUM SPEED
-# ============================================================================
-
-@njit(parallel=True)
-def _run_parallel_simulations(n_sims, board_size, remaining_ships, known_misses, 
-                              sunk_coords, known_hits):
-    """JIT-compiled parallel function to run all simulations at once"""
-    heat_map = np.zeros((board_size, board_size), dtype=np.float64)
-    successful_sims = 0
-    
-    # Run simulations in parallel using prange
-    for sim_idx in prange(n_sims):
-        # Each thread gets its own random seed
-        np.random.seed(sim_idx * 12345 + np.int64(np.random.random() * 1000000))
-        
-        result = _simulate_single_placement(
-            board_size,
-            remaining_ships,
-            known_misses,
-            sunk_coords,
-            known_hits
-        )
-        
-        if result is not None:
-            # Accumulate heat map (thread-safe with prange)
-            for i in range(len(result)):
-                row, col = result[i]
-                heat_map[row, col] += 1.0
-            successful_sims += 1
-    
-    return heat_map, successful_sims
-
-
-@njit
-def _simulate_single_placement(board_size, remaining_ships, known_misses, sunk_coords, known_hits):
-    """JIT-compiled function to simulate a single ship placement - returns array of coordinates"""
-    # Create temporary grid
-    temp_grid = np.zeros((board_size, board_size), dtype=np.int32)
-    
-    # Mark blocked cells
-    for i in range(len(known_misses)):
-        temp_grid[known_misses[i, 0], known_misses[i, 1]] = -1
-    
-    for i in range(len(sunk_coords)):
-        temp_grid[sunk_coords[i, 0], sunk_coords[i, 1]] = -1
-    
-    # Track required hits
-    required_hits_mask = np.zeros((board_size, board_size), dtype=np.int8)
-    for i in range(len(known_hits)):
-        required_hits_mask[known_hits[i, 0], known_hits[i, 1]] = 1
-    
-    # Shuffle ship order for randomness
-    ship_indices = np.arange(len(remaining_ships))
-    np.random.shuffle(ship_indices)
-    
-    # Pre-allocate array for all ship coordinates (max 17 cells for all ships)
-    max_coords = np.sum(remaining_ships)
-    all_coords = np.empty((max_coords, 2), dtype=np.int32)
-    coord_count = 0
-    
-    # Try to place each ship
-    for ship_idx in ship_indices:
-        ship_size = remaining_ships[ship_idx]
-        placed = False
-        attempts = 0
-        max_attempts = 100
-        
-        while not placed and attempts < max_attempts:
-            row = np.random.randint(0, board_size)
-            col = np.random.randint(0, board_size)
-            horizontal = np.random.randint(0, 2) == 0
-            
-            # Check if can place and get coordinates
-            can_place, coords = _try_place_ship(
-                temp_grid, required_hits_mask, board_size, 
-                row, col, ship_size, horizontal, ship_idx + 1
-            )
-            
-            if can_place:
-                # Add coordinates to result array
-                for i in range(len(coords)):
-                    all_coords[coord_count] = coords[i]
-                    coord_count += 1
-                placed = True
-            
-            attempts += 1
-        
-        if not placed:
-            # Failed to place this ship, simulation invalid
-            return None
-    
-    # Check if all required hits are covered
-    if np.any(required_hits_mask > 0):
-        return None
-    
-    # Return only the filled portion of the array
-    return all_coords[:coord_count]
-
-
-@njit
-def _try_place_ship(temp_grid, required_hits_mask, board_size, row, col, ship_size, horizontal, ship_id):
-    """Try to place a ship and return (success, coordinates)"""
-    coords = np.empty((ship_size, 2), dtype=np.int32)
-    
-    # Check bounds and collect coordinates
-    if horizontal:
-        if col + ship_size > board_size:
-            return False, coords
-        
-        for i in range(ship_size):
-            c = col + i
-            if temp_grid[row, c] != 0:
-                return False, coords
-            coords[i, 0] = row
-            coords[i, 1] = c
-    else:
-        if row + ship_size > board_size:
-            return False, coords
-        
-        for i in range(ship_size):
-            r = row + i
-            if temp_grid[r, col] != 0:
-                return False, coords
-            coords[i, 0] = r
-            coords[i, 1] = col
-    
-    # Place the ship and update masks
-    for i in range(ship_size):
-        r, c = coords[i, 0], coords[i, 1]
-        temp_grid[r, c] = ship_id
-        if required_hits_mask[r, c] > 0:
-            required_hits_mask[r, c] = 0
-    
-    return True, coords

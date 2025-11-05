@@ -22,7 +22,8 @@ game_state = {
     'move_count': 0,
     'last_move': None,
     'is_running': False,
-    'is_paused': False
+    'is_paused': False,
+    'ships_status': []  # [{id, size, name, sunk}]
 }
 
 state_lock = threading.Lock()
@@ -54,6 +55,26 @@ def update_game_state(board_data, game_num, total_games, move_count, last_move=N
             if max_prob == 0:
                 max_prob = 1.0  # Avoid division by zero
         
+        # Prepare ship status (names inferred by size and order)
+        # Standard naming for 10x10: 5: Carrier, 4: Battleship, 3: Cruiser/Submarine, 2: Destroyer
+        size_name_pool = {5: ['Carrier'], 4: ['Battleship'], 3: ['Cruiser', 'Submarine'], 2: ['Destroyer']}
+        size_name_used = {5:0,4:0,3:0,2:0}
+        ships_status = []
+        for ship in board_data['ships']:
+            size = ship.get('size', 0)
+            sunk = ship.get('sunk', False)
+            names = size_name_pool.get(size, [f"Size {size}"])
+            idx = min(size_name_used.get(size, 0), len(names)-1)
+            name = names[idx]
+            size_name_used[size] = size_name_used.get(size, 0) + 1
+            ships_status.append({
+                'id': ship.get('id'),
+                'size': size,
+                'name': name,
+                'sunk': bool(sunk)
+            })
+        game_state['ships_status'] = ships_status
+
         # Update board state
         for row in range(10):
             for col in range(10):
@@ -75,14 +96,18 @@ def update_game_state(board_data, game_num, total_games, move_count, last_move=N
                         cell['state'] = 'miss'
                     # Clear probability for guessed cells
                     cell['probability'] = 0
+                    cell['rawProbability'] = 0
                 else:
                     cell['state'] = 'unknown'
                     # Add normalized probability data for unknown cells
                     if probability_map is not None:
-                        normalized_prob = float(probability_map[row][col]) / max_prob
+                        raw_prob = float(probability_map[row][col])
+                        normalized_prob = raw_prob / max_prob
                         cell['probability'] = normalized_prob
+                        cell['rawProbability'] = raw_prob
                     else:
                         cell['probability'] = 0
+                        cell['rawProbability'] = 0
                 
                 # Track if there's a ship here (for debugging/analysis)
                 cell['ship'] = board_data['grid'][row][col] != 0
