@@ -1,8 +1,0 @@
-Player: Random Target Player
-Batch: 1/10
-Games completed: 100000
-Best moves: 23
-Worst moves: 100
-Average moves: 66.09
-Total time: 25.97s
-Timestamp: 2025-10-24_15-35-56

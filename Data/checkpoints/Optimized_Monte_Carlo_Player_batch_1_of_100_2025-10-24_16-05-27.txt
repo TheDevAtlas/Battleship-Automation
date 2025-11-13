@@ -1,8 +1,0 @@
-Player: Optimized Monte Carlo Player
-Batch: 1/100
-Games completed: 100
-Best moves: 30
-Worst moves: 69
-Average moves: 50.63
-Total time: 40.18s
-Timestamp: 2025-10-24_16-05-27
