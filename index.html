@@ -25,14 +25,17 @@
             width: 40px;
             height: 40px;
             box-sizing: border-box;
-            transition: background-color 0.01s ease, box-shadow 0.01s ease;
+        }
+        
+        .cell.smooth-transition {
+            transition: background-color 0.1s ease, box-shadow 0.1s ease;
         }
 
         .cell.empty {
             background-color: #FFFDFF;
-            -webkit-box-shadow:0px 0px 55px 2px rgba(230,0,255,0.52);
--moz-box-shadow: 0px 0px 55px 2px rgba(230,0,255,0.52);
-box-shadow: 0px 0px 55px 2px rgba(230,0,255,0.52);
+            -webkit-box-shadow:0px 0px 55px 2px rgba(230,0,255,0.12);
+-moz-box-shadow: 0px 0px 55px 2px rgba(230,0,255,0.12);
+box-shadow: 0px 0px 55px 2px rgba(230,0,255,0.12);
         }
           .cell.hit {
             background-color: #FF3A67;
@@ -48,23 +51,15 @@ box-shadow: 0px 0px 55px 2px rgba(255,0,0,0.82);
 box-shadow: 0px 0px 55px 2px rgba(139,0,0,0.9);
         }.cell.miss {
             background-color: #3a4346;
-            -webkit-box-shadow:0px 0px 55px 2px rgba(71,71,71,0.52);
--moz-box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
-box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
+            -webkit-box-shadow:0px 0px 55px 2px rgba(71,71,71,0.12);
+-moz-box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
+box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
         }
-        
-        .cell.targeting-highlight {
+          .cell.targeting-highlight {
             background-color: #FFD700;
             -webkit-box-shadow:0px 0px 55px 2px rgba(255,215,0,0.8);
             -moz-box-shadow: 0px 0px 55px 2px rgba(255,215,0,0.8);
             box-shadow: 0px 0px 55px 2px rgba(255,215,0,0.8);
-            animation: targeting-pulse 1s ease-in-out;
-        }
-        
-        @keyframes targeting-pulse {
-            0% { opacity: 0.5; }
-            50% { opacity: 1; }
-            100% { opacity: 0.7; }
         }
     </style>
 </head>
@@ -116,11 +111,16 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                 }
             }
         }        // Function to update cell class based on state
-        function updateCellClass(cell, state) {
+        function updateCellClass(cell, state, preserveHighlight = false) {
+            const wasHighlighted = cell.classList.contains('targeting-highlight');
             cell.classList.remove('empty', 'miss', 'hit', 'sunk', 'targeting-highlight');
             switch(state) {
                 case 0:
                     cell.classList.add('empty');
+                    // Restore highlight if it should be preserved and cell is still empty
+                    if (preserveHighlight && wasHighlighted) {
+                        cell.classList.add('targeting-highlight');
+                    }
                     break;
                 case 1:
                     cell.classList.add('miss');
@@ -132,15 +132,15 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                     cell.classList.add('sunk');
                     break;
             }
-        }// Function to update the entire grid display
-        function updateGrid() {
+        }        // Function to update the entire grid display
+        function updateGrid(preserveHighlights = false) {
             for (let row = 0; row < 10; row++) {
                 for (let col = 0; col < 10; col++) {
                     const cell = grid[row][col];
-                    updateCellClass(cell, gameBoard[row][col]);
+                    updateCellClass(cell, gameBoard[row][col], preserveHighlights);
                 }
             }
-        }        // Function to update a specific cell
+        }// Function to update a specific cell
         function updateCell(row, col, state) {
             if (row >= 0 && row < 10 && col >= 0 && col < 10) {
                 gameBoard[row][col] = state;
@@ -158,10 +158,10 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
             }
             updateGrid();
         }        // Function to set multiple cells at once
-        function setBoardState(newBoard) {
+        function setBoardState(newBoard, preserveHighlights = false) {
             if (newBoard.length === 10 && newBoard[0].length === 10) {
                 gameBoard = newBoard.map(row => [...row]); // Deep copy
-                updateGrid();
+                updateGrid(preserveHighlights);
             }
         }
 
@@ -243,7 +243,7 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                 let attempts = 0;
                 
                 while (!placed && attempts < 100) {
-                    const horizontal = Math.random() < 0.5;
+                    const horizontal = Math.random() < 0.1;
                     const row = Math.floor(Math.random() * 10);
                     const col = Math.floor(Math.random() * 10);
                     
@@ -365,12 +365,14 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                 const data = JSON.parse(event.data);
                 
                 if (data.type === 'board_update') {
-                    // Update the board with new state from Python
-                    setBoardState(data.board);
+                    // Update the board with new state from Python, preserving highlights
+                    setBoardState(data.board, true);
                 } else if (data.type === 'game_over') {
                     console.log(`Game over in ${data.moves} moves!`);
                     clearTargetingHighlights();
                 } else if (data.type === 'targeting_highlights') {
+                    // Enable smooth transitions for video mode
+                    cells.forEach(cell => cell.classList.add('smooth-transition'));
                     // Highlight suspected targeting squares
                     highlightTargetingSquares(data.squares);
                 } else if (data.type === 'clear_highlights') {
