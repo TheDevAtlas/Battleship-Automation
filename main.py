@@ -48,7 +48,6 @@ class BattleshipServer:
         print("WebSocket disconnected")
         self.websocket = None
         return ws
-    
     async def send_board_update(self, board: list):
         """Send board update to the connected WebSocket client."""
         if self.websocket and not self.websocket.closed:
@@ -71,6 +70,13 @@ class BattleshipServer:
             await self.websocket.send_json({
                 'type': 'targeting_highlights',
                 'squares': target_squares
+            })
+    
+    async def send_clear_highlights(self):
+        """Send message to clear targeting highlights."""
+        if self.websocket and not self.websocket.closed:
+            await self.websocket.send_json({
+                'type': 'clear_highlights'
             })
 
 
@@ -98,15 +104,16 @@ class BattleshipRunner:
         print("   [1] Random")
         print("   [2] Hunt and Target")
         brain_choice = input("   Enter choice (1): ").strip() or "1"
-        
-        # Question 2: Number of games
+          # Question 2: Number of games
         print("\n2) How many games to run?")
         num_games = input("   Enter number (default 10): ").strip() or "10"
-        try:            num_games = int(num_games)
+        try:
+            num_games = int(num_games)
         except ValueError:
             print("   Invalid input, using default of 10")
             num_games = 10
-          # Question 3: Visual GUI
+        
+        # Question 3: Visual GUI
         print("\n3) Should we use the visual GUI?")
         print("   [y] Yes - Open browser and show games")
         print("   [n] No - Run in background")
@@ -141,15 +148,16 @@ class BattleshipRunner:
         """Run a single game and return the number of moves."""
         game = BattleshipGame()
         game.setup_board()
-        
-        # Select agent based on brain choice
+          # Select agent based on brain choice
         if self.brain_choice == "2":
             agent = HuntAndTargetAgent()
         else:
             agent = RandomAgent()
+        
         # Send initial empty board if visual
         if self.use_visual and self.server:
             await self.server.send_board_update(game.get_board_state())
+        
         while not game.is_game_over():
             # NEW: Send targeting highlights if in video mode with hunt & target
             if (self.use_visual and self.server and self.show_targeting_highlights and 
@@ -164,7 +172,15 @@ class BattleshipRunner:
             
             # Send update to visual if enabled
             if self.use_visual and self.server:
-                await self.server.send_board_update(game.get_board_state())
+                # Get board state with sunk ships marked as state 3
+                board_state = game.get_board_state_with_sunk()
+                await self.server.send_board_update(board_state)
+                
+                # If a ship was sunk, clear targeting highlights
+                if sunk_ship and self.show_targeting_highlights:
+                    await self.server.send_clear_highlights()
+                    await asyncio.sleep(0.2)  # Brief pause after clearing highlights
+                
                 await asyncio.sleep(self.delay_between_moves)
         
         # Send game over message

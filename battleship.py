@@ -106,10 +106,22 @@ class BattleshipGame:
     def is_game_over(self) -> bool:
         """Check if all ships have been sunk."""
         return self.hits == sum(self.ships)
-    
     def get_board_state(self) -> List[List[int]]:
         """Get the current board state."""
         return [row[:] for row in self.board]
+    
+    def get_board_state_with_sunk(self) -> List[List[int]]:
+        """Get the current board state with sunk ships marked as state 3."""
+        board_copy = [row[:] for row in self.board]
+        
+        # Mark sunk ship positions
+        for ship in self.ship_tiles:
+            if ship.issubset(self.guessed_positions):
+                # This ship is sunk, mark all its positions as state 3
+                for row, col in ship:
+                    board_copy[row][col] = 3
+        
+        return board_copy
 
 
 class RandomAgent:
@@ -142,24 +154,25 @@ class HuntAndTargetAgent:
         self.available_positions = [(r, c) for r in range(10) for c in range(10)]
         random.shuffle(self.available_positions)
         self.position_index = 0
-        
-        # Tracking hits and targets
+          # Tracking hits and targets
         self.hits: Set[Tuple[int, int]] = set()
+        self.misses: Set[Tuple[int, int]] = set()
+        self.all_guessed: Set[Tuple[int, int]] = set()  # All positions we've guessed
         self.targets: List[Tuple[int, int]] = []  # Queue of positions to target
         self.current_ship_hits: Set[Tuple[int, int]] = set()  # Hits on the current ship being targeted
-        
     def get_move(self) -> Tuple[int, int]:
         """Get the next move using hunt and target strategy."""
         # If we have targets to pursue, target mode
         if self.targets:
             return self.targets.pop(0)
-          # Otherwise, hunt mode - pick next random position
+        
+        # Otherwise, hunt mode - pick next random position
         while self.position_index < len(self.available_positions):
             move = self.available_positions[self.position_index]
             self.position_index += 1
             
-            # Skip positions we've already targeted or hit
-            if move not in self.hits and move not in [t for t in self.targets]:
+            # Skip positions we've already guessed
+            if move not in self.all_guessed:
                 return move
         
         # Fallback (should never happen in a proper game)
@@ -167,6 +180,9 @@ class HuntAndTargetAgent:
     
     def update(self, row: int, col: int, result: str, sunk_ship: Optional[Set[Tuple[int, int]]] = None):
         """Update agent with the result of the last move."""
+        # Track all guessed positions
+        self.all_guessed.add((row, col))
+        
         if result == 'hit':
             self.hits.add((row, col))
             self.current_ship_hits.add((row, col))
@@ -176,11 +192,15 @@ class HuntAndTargetAgent:
                 # Remove sunk ship positions from current tracking
                 self.current_ship_hits -= sunk_ship
                 
-                # Remove any targets that were for the sunk ship
-                self.targets = [t for t in self.targets if t not in sunk_ship]
+                # Remove any targets that are adjacent to or part of the sunk ship
+                self.targets = [t for t in self.targets if not self._is_adjacent_or_in_ship(t, sunk_ship)]
+                
+                # If we cleared all targets, we're back in hunt mode automatically
             else:
                 # Ship not sunk yet, add adjacent cells to targets
                 self._add_adjacent_targets(row, col)
+        elif result == 'miss':
+            self.misses.add((row, col))
     
     def _add_adjacent_targets(self, row: int, col: int):
         """Add adjacent cells to the target list."""
@@ -193,9 +213,9 @@ class HuntAndTargetAgent:
         ]
         
         for adj_row, adj_col in adjacent:
-            # Check if position is valid and not already targeted
+            # Check if position is valid and not already guessed or targeted
             if (0 <= adj_row < 10 and 0 <= adj_col < 10 and
-                (adj_row, adj_col) not in self.hits and
+                (adj_row, adj_col) not in self.all_guessed and
                 (adj_row, adj_col) not in self.targets):
                 
                 # If we have multiple hits on current ship, prioritize inline targets
@@ -229,6 +249,23 @@ class HuntAndTargetAgent:
             return col == cols[0]
         
         return True
+    
+    def _is_adjacent_or_in_ship(self, pos: Tuple[int, int], sunk_ship: Set[Tuple[int, int]]) -> bool:
+        """Check if a position is in the sunk ship or adjacent to it."""
+        row, col = pos
+        
+        # Check if position is in the sunk ship
+        if pos in sunk_ship:
+            return True
+        
+        # Check if position is adjacent to any tile in the sunk ship
+        for ship_row, ship_col in sunk_ship:
+            # Check all 4 adjacent positions
+            if (abs(row - ship_row) == 1 and col == ship_col) or \
+               (abs(col - ship_col) == 1 and row == ship_row):
+                return True
+        
+        return False
 
 
 class GameStatistics:
