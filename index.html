@@ -25,6 +25,7 @@
             width: 40px;
             height: 40px;
             box-sizing: border-box;
+            transition: background-color 0.01s ease, box-shadow 0.01s ease;
         }
 
         .cell.empty {
@@ -44,38 +45,6 @@ box-shadow: 0px 0px 55px 2px rgba(255,0,0,0.82);
             -webkit-box-shadow:0px 0px 55px 2px rgba(71,71,71,0.52);
 -moz-box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
 box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
-        }
-
-        .cell.animate {
-            animation: spiralGrow 0.8s ease-in-out forwards;
-        }        @keyframes spiralGrow {
-            0% {
-                transform: scale(0);
-            }
-            70% {
-                transform: scale(1.1);
-            }
-            100% {
-                transform: scale(1);
-            }
-        }
-
-        @keyframes boardUpdate {
-            0% {
-                transform: scale(1);
-            }
-            50% {
-                transform: scale(1.1);
-            }
-            100% {
-                transform: scale(1);
-            }
-        }        .cell.updating {
-            animation: boardUpdate 0.3s ease-in-out forwards;
-        }
-
-        .cell.transitioning {
-            transition: all 0.5s ease-in-out;
         }
     </style>
 </head>
@@ -143,36 +112,20 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                     cell.classList.add('hit');
                     break;
             }
-        }
-
-        // Function to update the entire grid display
+        }        // Function to update the entire grid display
         function updateGrid() {
             for (let row = 0; row < 10; row++) {
                 for (let col = 0; col < 10; col++) {
                     const cell = grid[row][col];
                     updateCellClass(cell, gameBoard[row][col]);
-                    
-                    // Add updating animation
-                    cell.classList.add('updating');
-                    setTimeout(() => {
-                        cell.classList.remove('updating');
-                    }, 300);
                 }
             }
-        }
-
-        // Function to update a specific cell
+        }        // Function to update a specific cell
         function updateCell(row, col, state) {
             if (row >= 0 && row < 10 && col >= 0 && col < 10) {
                 gameBoard[row][col] = state;
                 const cell = grid[row][col];
                 updateCellClass(cell, state);
-                
-                // Add updating animation
-                cell.classList.add('updating');
-                setTimeout(() => {
-                    cell.classList.remove('updating');
-                }, 300);
             }
         }
 
@@ -184,9 +137,7 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                 }
             }
             updateGrid();
-        }
-
-        // Function to set multiple cells at once
+        }        // Function to set multiple cells at once
         function setBoardState(newBoard) {
             if (newBoard.length === 10 && newBoard[0].length === 10) {
                 gameBoard = newBoard.map(row => [...row]); // Deep copy
@@ -194,61 +145,12 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
             }
         }
 
-        // Calculate spiral order starting from center
-        function getSpiralOrder() {
-            const center = { x: 4.5, y: 4.5 }; // Center of 10x10 grid
-            const order = [];
-            
-            // Get all cell positions with their distances from center
-            for (let i = 0; i < 10; i++) {
-                for (let j = 0; j < 10; j++) {
-                    const distance = Math.sqrt(Math.pow(i - center.y, 2) + Math.pow(j - center.x, 2));
-                    const angle = Math.atan2(i - center.y, j - center.x);
-                    order.push({
-                        cell: grid[i][j],
-                        distance: distance,
-                        angle: angle,
-                        x: j,
-                        y: i
-                    });
-                }
-            }
-            
-            // Sort by distance first, then by angle for spiral effect
-            order.sort((a, b) => {
-                if (Math.abs(a.distance - b.distance) < 0.1) {
-                    return a.angle - b.angle;
-                }
-                return a.distance - b.distance;
-            });
-            
-            return order;
-        }        let spiralOrder;
-
-        // Animation function
-        function animateSpiral() {
-            // Reset all animations first
-            cells.forEach(cell => {
-                cell.classList.remove('animate');
-                cell.style.transform = 'scale(0)';
-            });
-
-            // Animate each cell with delay
-            spiralOrder.forEach((item, index) => {
-                setTimeout(() => {
-                    item.cell.classList.add('animate');
-                }, index * 10); // 0.01 seconds = 10ms delay between each tile
-            });
-        }        // Listen for keyboard events
+        // Listen for keyboard events
         document.addEventListener('keydown', (event) => {
             if (event.code === 'Space') {
                 event.preventDefault();
                 if (!isRandomizing) {
-                    animateSpiral();
-                    // Start randomizing after spiral animation
-                    setTimeout(() => {
-                        startRandomizing();
-                    }, 800); // Wait for spiral animation to complete
+                    startRandomizing();
                 } else {
                     stopRandomizing();
                 }
@@ -372,15 +274,8 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                     board[row + i][col] = 2; // Hit
                 }
             }
-        }
-
-        // Function to smoothly update the grid
+        }        // Function to smoothly update the grid
         function smoothUpdateGrid(newBoard) {
-            // Add transition class to all cells
-            cells.forEach(cell => {
-                cell.classList.add('transitioning');
-            });
-
             // Update the game board and cell classes
             for (let row = 0; row < 10; row++) {
                 for (let col = 0; col < 10; col++) {
@@ -389,13 +284,6 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                     updateCellClass(cell, newBoard[row][col]);
                 }
             }
-
-            // Remove transition class after animation completes
-            setTimeout(() => {
-                cells.forEach(cell => {
-                    cell.classList.remove('transitioning');
-                });
-            }, 500);
         }
 
         // Function to start randomizing the grid
@@ -418,19 +306,39 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                 clearInterval(randomizeInterval);
                 randomizeInterval = null;
             }
-        }// Initialize the grid
+        }// WebSocket connection for Python control
+        let ws = null;
+        
+        function connectWebSocket() {
+            ws = new WebSocket('ws://localhost:8080/ws');
+            
+            ws.onopen = () => {
+                console.log('Connected to Python backend');
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.type === 'board_update') {
+                    // Update the board with new state from Python
+                    setBoardState(data.board);
+                } else if (data.type === 'game_over') {
+                    console.log(`Game over in ${data.moves} moves!`);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+            
+            ws.onclose = () => {
+                console.log('Disconnected from Python backend');
+            };
+        }        // Initialize the grid
         createGrid();
         
-        // Initialize spiral order after grid is created
-        spiralOrder = getSpiralOrder();
-        
-        // Show cells immediately (you can comment this out if you want them hidden initially)
-        cells.forEach(cell => {
-            cell.style.transform = 'scale(1)';
-        });
-        
-        // Optionally, animate the initial appearance
-        // animateSpiral();
+        // Connect to WebSocket when page loads
+        connectWebSocket();
     </script>
 </body>
 </html>
