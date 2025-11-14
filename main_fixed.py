@@ -45,6 +45,7 @@ class BattleshipServer:
                 # Handle any messages from the client if needed
             elif msg.type == aiohttp.WSMsgType.ERROR:
                 print(f'WebSocket error: {ws.exception()}')
+        
         print("WebSocket disconnected")
         self.websocket = None
         return ws
@@ -102,11 +103,13 @@ class BattleshipRunner:
         # Question 2: Number of games
         print("\n2) How many games to run?")
         num_games = input("   Enter number (default 10): ").strip() or "10"
-        try:            num_games = int(num_games)
+        try:
+            num_games = int(num_games)
         except ValueError:
             print("   Invalid input, using default of 10")
             num_games = 10
-          # Question 3: Visual GUI
+        
+        # Question 3: Visual GUI
         print("\n3) Should we use the visual GUI?")
         print("   [y] Yes - Open browser and show games")
         print("   [n] No - Run in background")
@@ -147,9 +150,11 @@ class BattleshipRunner:
             agent = HuntAndTargetAgent()
         else:
             agent = RandomAgent()
+        
         # Send initial empty board if visual
         if self.use_visual and self.server:
             await self.server.send_board_update(game.get_board_state())
+        
         while not game.is_game_over():
             # NEW: Send targeting highlights if in video mode with hunt & target
             if (self.use_visual and self.server and self.show_targeting_highlights and 
@@ -191,7 +196,8 @@ class BattleshipRunner:
         site = web.TCPSite(runner, 'localhost', 8080)
         await site.start()
         print(f"Server started at http://localhost:8080")
-        if self.use_visual:            # Open browser
+        if self.use_visual:
+            # Open browser
             webbrowser.open('http://localhost:8080')
             print("Opening browser...")
             # Removed artificial delay - super speed mode!
@@ -206,6 +212,7 @@ class BattleshipRunner:
         # Removed artificial delay - super speed mode!
         
         await runner.cleanup()
+    
     async def run_without_server(self, num_games: int):
         """Run games without the visual server."""
         await self.run_games(num_games)

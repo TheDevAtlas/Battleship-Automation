@@ -46,6 +46,20 @@ box-shadow: 0px 0px 55px 2px rgba(255,0,0,0.82);
 -moz-box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
 box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
         }
+        
+        .cell.targeting-highlight {
+            background-color: #FFD700;
+            -webkit-box-shadow:0px 0px 55px 2px rgba(255,215,0,0.8);
+            -moz-box-shadow: 0px 0px 55px 2px rgba(255,215,0,0.8);
+            box-shadow: 0px 0px 55px 2px rgba(255,215,0,0.8);
+            animation: targeting-pulse 1s ease-in-out;
+        }
+        
+        @keyframes targeting-pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.7; }
+        }
     </style>
 </head>
 <body>    <div class="grid-container" id="grid-container">
@@ -96,11 +110,9 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                     grid[row][col] = cell;
                 }
             }
-        }
-
-        // Function to update cell class based on state
+        }        // Function to update cell class based on state
         function updateCellClass(cell, state) {
-            cell.classList.remove('empty', 'miss', 'hit');
+            cell.classList.remove('empty', 'miss', 'hit', 'targeting-highlight');
             switch(state) {
                 case 0:
                     cell.classList.add('empty');
@@ -112,7 +124,7 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
                     cell.classList.add('hit');
                     break;
             }
-        }        // Function to update the entire grid display
+        }// Function to update the entire grid display
         function updateGrid() {
             for (let row = 0; row < 10; row++) {
                 for (let col = 0; col < 10; col++) {
@@ -142,6 +154,33 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
             if (newBoard.length === 10 && newBoard[0].length === 10) {
                 gameBoard = newBoard.map(row => [...row]); // Deep copy
                 updateGrid();
+            }
+        }
+
+        // Function to highlight targeting squares
+        function highlightTargetingSquares(squares) {
+            // Clear any existing highlights
+            clearTargetingHighlights();
+            
+            // Add highlights to specified squares
+            squares.forEach(square => {
+                const [row, col] = square;
+                if (row >= 0 && row < 10 && col >= 0 && col < 10) {
+                    const cell = grid[row][col];
+                    // Only highlight if it's an empty cell
+                    if (gameBoard[row][col] === 0) {
+                        cell.classList.add('targeting-highlight');
+                    }
+                }
+            });
+        }
+
+        // Function to clear targeting highlights
+        function clearTargetingHighlights() {
+            for (let row = 0; row < 10; row++) {
+                for (let col = 0; col < 10; col++) {
+                    grid[row][col].classList.remove('targeting-highlight');
+                }
             }
         }
 
@@ -315,15 +354,20 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.52);
             ws.onopen = () => {
                 console.log('Connected to Python backend');
             };
-            
-            ws.onmessage = (event) => {
+              ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
                 if (data.type === 'board_update') {
+                    // Clear any targeting highlights when board updates
+                    clearTargetingHighlights();
                     // Update the board with new state from Python
                     setBoardState(data.board);
                 } else if (data.type === 'game_over') {
                     console.log(`Game over in ${data.moves} moves!`);
+                    clearTargetingHighlights();
+                } else if (data.type === 'targeting_highlights') {
+                    // Highlight suspected targeting squares
+                    highlightTargetingSquares(data.squares);
                 }
             };
             
