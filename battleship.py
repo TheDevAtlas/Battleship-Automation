@@ -3,6 +3,8 @@ import json
 import random
 from typing import List, Tuple, Set, Optional
 import statistics
+import numpy as np
+import numpy as np
 
 class BattleshipGame:
     """Represents a single battleship game instance."""
@@ -305,9 +307,13 @@ class ParityHuntAgent:
                 # If (row + col) is not divisible by smallest_ship, eliminate it
                 if (row + col) % smallest_ship != 0:
                     self.eliminated_squares.add((row, col))
-    
     def get_eliminated_squares(self) -> List[Tuple[int, int]]:
-        """Get the current list of eliminated squares for visual display."""
+        """Get the current list of eliminated squares for visual display.
+        Only returns squares that are currently eliminated AND not yet guessed.
+        """
+        # Return only the squares that are eliminated under the current parity
+        # and haven't been guessed yet. This ensures that when parity changes,
+        # previously eliminated squares become white again if they're now valid.
         return list(self.eliminated_squares - self.all_guessed)
     
     def get_move(self) -> Tuple[int, int]:
@@ -436,6 +442,181 @@ class ParityHuntAgent:
         return False
 
 
+class ProbabilityAgent:
+    """Agent that uses probability heat maps to make optimal guesses."""
+    
+    def __init__(self):
+        # Tracking hits and targets
+        self.hits: Set[Tuple[int, int]] = set()
+        self.misses: Set[Tuple[int, int]] = set()
+        self.all_guessed: Set[Tuple[int, int]] = set()
+        
+        # Track remaining ships (we know these: 5, 4, 3, 3, 2)
+        self.remaining_ships = [5, 4, 3, 3, 2]
+        
+        # Probability heat map
+        self.prob_map = np.zeros((10, 10))
+        
+        # Track unsunk hits (hits that are part of ships we haven't sunk yet)
+        self.unsunk_hits: Set[Tuple[int, int]] = set()
+        
+        # Shot map: 0 = unknown, 1 = miss, 2 = hit
+        self.shot_map = np.zeros((10, 10), dtype=int)
+        
+        # Generate initial probability map
+        self._generate_prob_map()
+    
+    def _generate_prob_map(self):
+        """Generate probability heat map based on remaining ships and known information."""
+        self.prob_map = np.zeros((10, 10))
+        
+        # For each remaining ship size, calculate probabilities
+        for ship_size in self.remaining_ships:
+            # Check horizontal placements
+            for row in range(10):
+                for col in range(10 - ship_size + 1):
+                    # Check if ship can fit here horizontally
+                    segment = [(row, col + i) for i in range(ship_size)]
+                    if self._can_place_ship(segment):
+                        # Add probability to all squares in this potential placement
+                        for r, c in segment:
+                            self.prob_map[r, c] += 1
+            
+            # Check vertical placements
+            for row in range(10 - ship_size + 1):
+                for col in range(10):
+                    # Check if ship can fit here vertically
+                    segment = [(row + i, col) for i in range(ship_size)]
+                    if self._can_place_ship(segment):
+                        # Add probability to all squares in this potential placement
+                        for r, c in segment:
+                            self.prob_map[r, c] += 1
+        
+        # Apply bonuses for unsunk hits
+        if self.unsunk_hits:
+            self._apply_hit_bonuses()
+    
+    def _can_place_ship(self, segment: List[Tuple[int, int]]) -> bool:
+        """Check if a ship segment can be placed (doesn't overlap misses or sunk ships)."""
+        for row, col in segment:
+            # Can't place on a miss
+            if (row, col) in self.misses:
+                return False
+            # Can't place on a position we already guessed (unless it's an unsunk hit)
+            if (row, col) in self.all_guessed and (row, col) not in self.unsunk_hits:
+                return False
+        
+        # If there are unsunk hits, the segment must contain at least one hit
+        if self.unsunk_hits:
+            has_hit = any((r, c) in self.unsunk_hits for r, c in segment)
+            if not has_hit:
+                return False
+        
+        return True
+    
+    def _apply_hit_bonuses(self):
+        """Apply artificial weight to squares adjacent to unsunk hits."""
+        for row, col in self.unsunk_hits:
+            # Check if we have multiple hits in a line (horizontal or vertical)
+            direction = self._get_hit_direction()
+            
+            if direction == 'horizontal':
+                # Boost horizontal neighbors
+                if col > 0 and (row, col - 1) not in self.all_guessed:
+                    self.prob_map[row, col - 1] += 50
+                if col < 9 and (row, col + 1) not in self.all_guessed:
+                    self.prob_map[row, col + 1] += 50
+            elif direction == 'vertical':
+                # Boost vertical neighbors
+                if row > 0 and (row - 1, col) not in self.all_guessed:
+                    self.prob_map[row - 1, col] += 50
+                if row < 9 and (row + 1, col) not in self.all_guessed:
+                    self.prob_map[row + 1, col] += 50
+            else:
+                # No clear direction, boost all adjacent squares
+                adjacent = [
+                    (row - 1, col),  # Up
+                    (row + 1, col),  # Down
+                    (row, col - 1),  # Left
+                    (row, col + 1)   # Right
+                ]
+                for adj_row, adj_col in adjacent:
+                    if (0 <= adj_row < 10 and 0 <= adj_col < 10 and
+                        (adj_row, adj_col) not in self.all_guessed):
+                        self.prob_map[adj_row, adj_col] += 50
+    
+    def _get_hit_direction(self) -> str:
+        """Determine if unsunk hits are horizontal, vertical, or undetermined."""
+        if len(self.unsunk_hits) < 2:
+            return 'none'
+        
+        hits_list = list(self.unsunk_hits)
+        rows = [h[0] for h in hits_list]
+        cols = [h[1] for h in hits_list]
+        
+        # If all hits are in same row (horizontal)
+        if len(set(rows)) == 1:
+            return 'horizontal'
+        
+        # If all hits are in same column (vertical)
+        if len(set(cols)) == 1:
+            return 'vertical'
+        
+        return 'none'
+    
+    def get_move(self) -> Tuple[int, int]:
+        """Get the next move by selecting the square with highest probability."""
+        # Regenerate probability map with current information
+        self._generate_prob_map()
+        
+        # Find the square with the highest probability that we haven't guessed
+        max_prob = -1
+        best_move = None
+        
+        for row in range(10):
+            for col in range(10):
+                if (row, col) not in self.all_guessed:
+                    if self.prob_map[row, col] > max_prob:
+                        max_prob = self.prob_map[row, col]
+                        best_move = (row, col)
+        
+        # Fallback (should never happen in a proper game)
+        if best_move is None:
+            for row in range(10):
+                for col in range(10):
+                    if (row, col) not in self.all_guessed:
+                        return (row, col)
+            return (random.randint(0, 9), random.randint(0, 9))
+        
+        return best_move
+    
+    def update(self, row: int, col: int, result: str, sunk_ship: Optional[Set[Tuple[int, int]]] = None):
+        """Update agent with the result of the last move."""
+        # Track all guessed positions
+        self.all_guessed.add((row, col))
+        
+        if result == 'hit':
+            self.hits.add((row, col))
+            self.unsunk_hits.add((row, col))
+            self.shot_map[row, col] = 2
+            
+            # If a ship was sunk, remove it from remaining ships
+            if sunk_ship is not None:
+                ship_size = len(sunk_ship)
+                if ship_size in self.remaining_ships:
+                    self.remaining_ships.remove(ship_size)
+                
+                # Remove sunk ship positions from unsunk hits
+                self.unsunk_hits -= sunk_ship
+        elif result == 'miss':
+            self.misses.add((row, col))
+            self.shot_map[row, col] = 1
+    
+    def get_prob_map(self) -> np.ndarray:
+        """Get the current probability map for visualization."""
+        return self.prob_map.copy()
+
+
 class GameStatistics:
     """Track statistics across multiple games."""
     
@@ -480,8 +661,7 @@ class GameStatistics:
         print(f"Worst Game (most moves): {summary['worst_game']}")
         print(f"Median Moves: {summary['median_moves']:.1f}")
         print("=" * 50)
-        
-        # Print distribution
+          # Print distribution
         if self.game_moves:
             print("\nMove Distribution:")
             ranges = [(0, 20), (21, 30), (31, 40), (41, 50), (51, 60), (61, 100)]
