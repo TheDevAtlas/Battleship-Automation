@@ -9,6 +9,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import Counter
+import csv
 
 from battleship import BattleshipGame, RandomAgent, HuntAndTargetAgent, ParityHuntAgent, ProbabilityAgent, GameStatistics
 
@@ -101,9 +102,61 @@ class BattleshipRunner:
         self.delay_between_games = 0.025  # No delay - super speed!
         self.brain_choice = "1"  # Track which agent to use
         self.use_video_mode = False  # New: For video enhancement features
-        self.show_targeting_highlights = False  # New: Show yellow gradient on suspected squares        self.multi_agent_mode = False  # Track if running multiple agents
+        self.show_targeting_highlights = False  # New: Show yellow gradient on suspected squares        
+        self.multi_agent_mode = False  # Track if running multiple agents
         self.agent_stats = {}  # Store stats per agent
         self.selected_agents = [1, 2, 3, 4]  # Which agents to run in multi-agent mode
+    
+    def get_agent_name(self, choice: str) -> str:
+        """Get agent name from choice number."""
+        agent_names = {
+            "1": "Random",
+            "2": "Hunt and Target",
+            "3": "Parity Hunt",
+            "4": "Probability"
+        }
+        return agent_names.get(choice, "Random")
+    
+    def get_csv_path(self, agent_name: str) -> Path:
+        """Get the CSV file path for an agent."""
+        # Clean filename: remove spaces and special characters
+        clean_name = agent_name.replace(" ", "_").replace("(", "").replace(")", "")
+        return Path(__file__).parent / f"{clean_name}.csv"
+    
+    def load_csv_data(self, agent_name: str) -> list:
+        """Load existing game results from CSV file."""
+        csv_path = self.get_csv_path(agent_name)
+        moves = []
+        
+        if csv_path.exists():
+            try:
+                with open(csv_path, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    next(reader, None)  # Skip header if exists
+                    for row in reader:
+                        if row and row[0].isdigit():
+                            moves.append(int(row[0]))
+                print(f"   Loaded {len(moves)} existing games from {csv_path.name}")
+            except Exception as e:
+                print(f"   Warning: Could not load CSV data: {e}")
+        
+        return moves
+    
+    def save_game_to_csv(self, agent_name: str, moves: int):
+        """Save a single game result to CSV file."""
+        csv_path = self.get_csv_path(agent_name)
+        
+        # Check if file exists to determine if we need a header
+        file_exists = csv_path.exists()
+        
+        try:
+            with open(csv_path, 'a', newline='') as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(['moves'])  # Header
+                writer.writerow([moves])
+        except Exception as e:
+            print(f"   Warning: Could not save to CSV: {e}")
     
     def get_user_input(self) -> tuple:
         """Get configuration from user."""
@@ -266,11 +319,14 @@ class BattleshipRunner:
                     await self.server.send_eliminated_squares(eliminated)
                 
                 await asyncio.sleep(self.delay_between_moves)
-        
-        # Send game over message
+          # Send game over message
         if self.use_visual and self.server:
             await self.server.send_game_over(game.moves)
             await asyncio.sleep(self.delay_between_games)
+        
+        # Save game result to CSV
+        agent_name = self.get_agent_name(self.brain_choice)
+        self.save_game_to_csv(agent_name, game.moves)
         
         return game.moves
     
@@ -295,13 +351,12 @@ class BattleshipRunner:
             webbrowser.open('http://localhost:8080')
             print("Opening browser...")
             # Removed artificial delay - super speed mode!
-        
-        # Run the games
+          # Run the games
         await self.run_games(num_games)
-          # Print statistics immediately after games complete
+        
+        # Print statistics immediately after games complete
         print("\n")  # Add spacing after progress bar
         self.stats.print_summary()
-          # Removed artificial delay - super speed mode!
         
         await runner.cleanup()
     
@@ -334,18 +389,48 @@ class BattleshipRunner:
             self.brain_choice = choice
             self.stats = GameStatistics()
             
-            # Run games for this agent
-            if use_visual:
-                await self.start_server_and_run(num_games)
-            else:
-                await self.run_games(num_games)
+            # Load existing CSV data
+            existing_moves = self.load_csv_data(name)
+            
+            # If we have existing data and not using visual mode, skip running
+            if existing_moves and not use_visual:
+                print(f"   Using existing {len(existing_moves)} games from CSV")
+                # Populate stats with existing data
+                for move_count in existing_moves:
+                    self.stats.add_game(move_count)
+                
+                # Only run NEW games if needed
+                games_to_run = max(0, num_games - len(existing_moves))
+                if games_to_run > 0:
+                    print(f"   Running {games_to_run} additional games...")
+                    await self.run_games(games_to_run)
+                    
                 print("\n")
                 self.stats.print_summary()
+            else:
+                # Visual mode or no existing data - run all games
+                if use_visual:
+                    await self.start_server_and_run(num_games)
+                else:
+                    # Load existing data first if any
+                    if existing_moves:
+                        for move_count in existing_moves:
+                            self.stats.add_game(move_count)
+                        games_to_run = max(0, num_games - len(existing_moves))
+                        if games_to_run > 0:
+                            print(f"   Running {games_to_run} additional games...")
+                            await self.run_games(games_to_run)
+                    else:
+                        await self.run_games(num_games)
+                    
+                    print("\n")
+                    self.stats.print_summary()
             
-            # Store the stats
+            # Store the stats (use CSV data for visualization)
+            csv_moves = self.load_csv_data(name)
             self.agent_stats[name] = {
                 'stats': self.stats,
-                'moves': self.stats.game_moves.copy()
+                'moves': csv_moves if csv_moves else self.stats.game_moves.copy()
             }
         
         # Print comparison summary
@@ -416,8 +501,7 @@ class BattleshipRunner:
         output_path = Path(__file__).parent / 'agent_comparison.png'
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='#1a1a1a')
         print(f"\n📊 Visualization saved to: {output_path}")
-        
-        # Show the plot
+          # Show the plot
         plt.show()
         
         print("✓ Visualization complete!")
@@ -431,9 +515,30 @@ class BattleshipRunner:
                 # Multi-agent comparison mode
                 asyncio.run(self.run_multi_agent_comparison(num_games, self.use_visual))
             elif self.use_visual:
+                # Visual mode always runs games
                 asyncio.run(self.start_server_and_run(num_games))
             else:
-                asyncio.run(self.run_without_server(num_games))
+                # Background mode - load existing CSV data if available
+                agent_name = self.get_agent_name(self.brain_choice)
+                existing_moves = self.load_csv_data(agent_name)
+                
+                if existing_moves:
+                    print(f"   Using existing {len(existing_moves)} games from CSV")
+                    # Populate stats with existing data
+                    for move_count in existing_moves:
+                        self.stats.add_game(move_count)
+                    
+                    # Only run NEW games if needed
+                    games_to_run = max(0, num_games - len(existing_moves))
+                    if games_to_run > 0:
+                        print(f"   Running {games_to_run} additional games...")
+                        asyncio.run(self.run_without_server(games_to_run))
+                    else:
+                        print("\n")
+                        self.stats.print_summary()
+                else:
+                    # No existing data - run all games
+                    asyncio.run(self.run_without_server(num_games))
         except KeyboardInterrupt:
             print("\n\nInterrupted by user!")
             # Print statistics even when interrupted
