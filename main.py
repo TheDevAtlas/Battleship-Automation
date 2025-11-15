@@ -7,7 +7,7 @@ from aiohttp import web
 import aiohttp
 from tqdm import tqdm
 
-from battleship import BattleshipGame, RandomAgent, HuntAndTargetAgent, GameStatistics
+from battleship import BattleshipGame, RandomAgent, HuntAndTargetAgent, ParityHuntAgent, GameStatistics
 
 
 class BattleshipServer:
@@ -78,6 +78,14 @@ class BattleshipServer:
             await self.websocket.send_json({
                 'type': 'clear_highlights'
             })
+    
+    async def send_eliminated_squares(self, eliminated_squares: list):
+        """Send eliminated squares to show in very light blue."""
+        if self.websocket and not self.websocket.closed:
+            await self.websocket.send_json({
+                'type': 'eliminated_squares',
+                'squares': eliminated_squares
+            })
 
 
 class BattleshipRunner:
@@ -98,11 +106,11 @@ class BattleshipRunner:
         print("\n" + "=" * 50)
         print("BATTLESHIP AUTOMATION")
         print("=" * 50)
-        
-        # Question 1: Brain type
+          # Question 1: Brain type
         print("\n1) What brain are we using?")
         print("   [1] Random")
         print("   [2] Hunt and Target")
+        print("   [3] Parity Hunt (eliminates unnecessary squares)")
         brain_choice = input("   Enter choice (1): ").strip() or "1"
           # Question 2: Number of games
         print("\n2) How many games to run?")
@@ -119,12 +127,11 @@ class BattleshipRunner:
         print("   [n] No - Run in background")
         visual_choice = input("   Enter choice (y/n): ").strip().lower()
         use_visual = visual_choice in ['y', 'yes', '']
-        
-        # NEW: Question 4: Video mode enhancements (only if GUI + Hunt & Target)
+          # NEW: Question 4: Video mode enhancements (only if GUI + Hunt & Target)
         use_video_mode = False
         show_targeting_highlights = False
-        if use_visual and brain_choice == "2":
-            print("\n4) Video mode enhancements for Hunt & Target?")
+        if use_visual and brain_choice in ["2", "3"]:
+            print("\n4) Video mode enhancements for Hunt & Target / Parity Hunt?")
             print("   [y] Yes - 1 second delays + targeting highlights")
             print("   [n] No - Super speed mode")
             video_choice = input("   Enter choice (y/n): ").strip().lower()
@@ -135,15 +142,15 @@ class BattleshipRunner:
                 show_targeting_highlights = True
                 print("   ✓ Enabled: 1 second delays")
                 print("   ✓ Enabled: Yellow gradient highlights on suspected squares")
-        
+                if brain_choice == "3":
+                    print("   ✓ Enabled: Light blue eliminated squares (parity pattern)")
         print("\n" + "=" * 50)
         print(f"Starting {num_games} game(s) with {'visual' if use_visual else 'background'} mode...")
-        if use_visual and brain_choice == "2" and use_video_mode:
+        if use_visual and brain_choice in ["2", "3"] and use_video_mode:
             print("Video enhancement mode: ON")
         print("=" * 50 + "\n")
         
         return brain_choice, num_games, use_visual, use_video_mode, show_targeting_highlights
-    
     async def run_single_game(self, game_number: int, total_games: int) -> int:
         """Run a single game and return the number of moves."""
         game = BattleshipGame()
@@ -151,12 +158,19 @@ class BattleshipRunner:
           # Select agent based on brain choice
         if self.brain_choice == "2":
             agent = HuntAndTargetAgent()
+        elif self.brain_choice == "3":
+            agent = ParityHuntAgent()
         else:
             agent = RandomAgent()
         
         # Send initial empty board if visual
         if self.use_visual and self.server:
             await self.server.send_board_update(game.get_board_state())
+            
+            # For Parity Hunt, send initial eliminated squares
+            if self.brain_choice == "3" and isinstance(agent, ParityHuntAgent):
+                eliminated = agent.get_eliminated_squares()
+                await self.server.send_eliminated_squares(eliminated)
         
         while not game.is_game_over():
             # NEW: Send targeting highlights if in video mode with hunt & target
@@ -164,6 +178,17 @@ class BattleshipRunner:
                 self.brain_choice == "2" and isinstance(agent, HuntAndTargetAgent) and agent.targets):
                 # Show suspected squares with yellow gradient
                 await self.server.send_targeting_highlights(list(agent.targets))
+                await asyncio.sleep(0.5)  # Brief pause to show highlights
+            
+            # NEW: Send targeting highlights AND eliminated squares for Parity Hunt
+            if (self.use_visual and self.server and self.show_targeting_highlights and 
+                self.brain_choice == "3" and isinstance(agent, ParityHuntAgent)):
+                # Show suspected squares with yellow gradient
+                if agent.targets:
+                    await self.server.send_targeting_highlights(list(agent.targets))
+                # Show eliminated squares with light blue
+                eliminated = agent.get_eliminated_squares()
+                await self.server.send_eliminated_squares(eliminated)
                 await asyncio.sleep(0.5)  # Brief pause to show highlights
             
             row, col = agent.get_move()

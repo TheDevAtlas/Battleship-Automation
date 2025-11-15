@@ -268,6 +268,174 @@ class HuntAndTargetAgent:
         return False
 
 
+class ParityHuntAgent:
+    """Agent that uses parity-based hunting to eliminate squares based on smallest remaining ship."""
+    
+    def __init__(self):
+        self.available_positions = [(r, c) for r in range(10) for c in range(10)]
+        random.shuffle(self.available_positions)
+        self.position_index = 0
+        
+        # Tracking hits and targets
+        self.hits: Set[Tuple[int, int]] = set()
+        self.misses: Set[Tuple[int, int]] = set()
+        self.all_guessed: Set[Tuple[int, int]] = set()
+        self.targets: List[Tuple[int, int]] = []  # Queue of positions to target
+        self.current_ship_hits: Set[Tuple[int, int]] = set()
+        
+        # Track remaining ships (we know these: 5, 4, 3, 3, 2)
+        self.remaining_ships = [5, 4, 3, 3, 2]
+        
+        # Eliminated squares (not valid for current parity pattern)
+        self.eliminated_squares: Set[Tuple[int, int]] = set()
+        self._update_eliminated_squares()
+    
+    def _update_eliminated_squares(self):
+        """Update the set of eliminated squares based on smallest remaining ship."""
+        self.eliminated_squares.clear()
+        
+        if not self.remaining_ships:
+            return
+        
+        smallest_ship = min(self.remaining_ships)
+        
+        # Mark squares that can't contain the smallest ship
+        for row in range(10):
+            for col in range(10):
+                # If (row + col) is not divisible by smallest_ship, eliminate it
+                if (row + col) % smallest_ship != 0:
+                    self.eliminated_squares.add((row, col))
+    
+    def get_eliminated_squares(self) -> List[Tuple[int, int]]:
+        """Get the current list of eliminated squares for visual display."""
+        return list(self.eliminated_squares - self.all_guessed)
+    
+    def get_move(self) -> Tuple[int, int]:
+        """Get the next move using parity hunt and target strategy."""
+        # If we have targets to pursue, target mode
+        if self.targets:
+            return self.targets.pop(0)
+        
+        # Otherwise, hunt mode - pick next valid parity position
+        smallest_ship = min(self.remaining_ships) if self.remaining_ships else 1
+        
+        # Try to find a valid move that matches the parity pattern
+        while self.position_index < len(self.available_positions):
+            move = self.available_positions[self.position_index]
+            self.position_index += 1
+            
+            # Skip positions we've already guessed
+            if move in self.all_guessed:
+                continue
+            
+            row, col = move
+            # Check if position matches parity pattern
+            if (row + col) % smallest_ship == 0:
+                return move
+        
+        # Fallback: if we've exhausted parity positions, pick any remaining position
+        for row in range(10):
+            for col in range(10):
+                if (row, col) not in self.all_guessed:
+                    return (row, col)
+        
+        # Should never reach here in a proper game
+        return (random.randint(0, 9), random.randint(0, 9))
+    
+    def update(self, row: int, col: int, result: str, sunk_ship: Optional[Set[Tuple[int, int]]] = None):
+        """Update agent with the result of the last move."""
+        # Track all guessed positions
+        self.all_guessed.add((row, col))
+        
+        if result == 'hit':
+            self.hits.add((row, col))
+            self.current_ship_hits.add((row, col))
+            
+            # If a ship was sunk, remove it from remaining ships
+            if sunk_ship is not None:
+                ship_size = len(sunk_ship)
+                if ship_size in self.remaining_ships:
+                    self.remaining_ships.remove(ship_size)
+                    # Update eliminated squares based on new smallest ship
+                    self._update_eliminated_squares()
+                
+                # Remove sunk ship positions from current tracking
+                self.current_ship_hits -= sunk_ship
+                
+                # Remove any targets that are adjacent to or part of the sunk ship
+                self.targets = [t for t in self.targets if not self._is_adjacent_or_in_ship(t, sunk_ship)]
+            else:
+                # Ship not sunk yet, add adjacent cells to targets
+                self._add_adjacent_targets(row, col)
+        elif result == 'miss':
+            self.misses.add((row, col))
+    
+    def _add_adjacent_targets(self, row: int, col: int):
+        """Add adjacent cells to the target list."""
+        # Check all 4 adjacent cells (up, down, left, right)
+        adjacent = [
+            (row - 1, col),  # Up
+            (row + 1, col),  # Down
+            (row, col - 1),  # Left
+            (row, col + 1)   # Right
+        ]
+        
+        for adj_row, adj_col in adjacent:
+            # Check if position is valid and not already guessed or targeted
+            if (0 <= adj_row < 10 and 0 <= adj_col < 10 and
+                (adj_row, adj_col) not in self.all_guessed and
+                (adj_row, adj_col) not in self.targets):
+                
+                # If we have multiple hits on current ship, prioritize inline targets
+                if len(self.current_ship_hits) > 1:
+                    # Check if this position is inline with existing hits
+                    if self._is_inline_with_hits(adj_row, adj_col):
+                        self.targets.insert(0, (adj_row, adj_col))  # Add to front
+                    else:
+                        self.targets.append((adj_row, adj_col))  # Add to back
+                else:
+                    self.targets.append((adj_row, adj_col))
+    
+    def _is_inline_with_hits(self, row: int, col: int) -> bool:
+        """Check if a position is inline with current ship hits."""
+        if len(self.current_ship_hits) < 2:
+            return True
+        
+        # Get all current hits as a list
+        hits_list = list(self.current_ship_hits)
+        
+        # Check if hits are horizontal or vertical
+        rows = [h[0] for h in hits_list]
+        cols = [h[1] for h in hits_list]
+        
+        # If all hits are in same row (horizontal ship)
+        if len(set(rows)) == 1:
+            return row == rows[0]
+        
+        # If all hits are in same column (vertical ship)
+        if len(set(cols)) == 1:
+            return col == cols[0]
+        
+        return True
+    
+    def _is_adjacent_or_in_ship(self, pos: Tuple[int, int], sunk_ship: Set[Tuple[int, int]]) -> bool:
+        """Check if a position is in the sunk ship or adjacent to it."""
+        row, col = pos
+        
+        # Check if position is in the sunk ship
+        if pos in sunk_ship:
+            return True
+        
+        # Check if position is adjacent to any tile in the sunk ship
+        for ship_row, ship_col in sunk_ship:
+            # Check all 4 adjacent positions
+            if (abs(row - ship_row) == 1 and col == ship_col) or \
+               (abs(col - ship_col) == 1 and row == ship_row):
+                return True
+        
+        return False
+
+
 class GameStatistics:
     """Track statistics across multiple games."""
     

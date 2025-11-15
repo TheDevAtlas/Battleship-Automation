@@ -49,7 +49,16 @@ box-shadow: 0px 0px 55px 2px rgba(255,0,0,0.82);
             -webkit-box-shadow:0px 0px 55px 2px rgba(139,0,0,0.9);
 -moz-box-shadow: 0px 0px 55px 2px rgba(139,0,0,0.9);
 box-shadow: 0px 0px 55px 2px rgba(139,0,0,0.9);
-        }.cell.miss {
+        }
+        
+        .cell.eliminated {
+            background-color: #E0F0FF;
+            -webkit-box-shadow:0px 0px 55px 2px rgba(173,216,230,0.15);
+            -moz-box-shadow: 0px 0px 55px 2px rgba(173,216,230,0.15);
+            box-shadow: 0px 0px 55px 2px rgba(173,216,230,0.15);
+        }
+        
+        .cell.miss {
             background-color: #3a4346;
             -webkit-box-shadow:0px 0px 55px 2px rgba(71,71,71,0.12);
 -moz-box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
@@ -111,15 +120,20 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
                 }
             }
         }        // Function to update cell class based on state
-        function updateCellClass(cell, state, preserveHighlight = false) {
+        function updateCellClass(cell, state, preserveHighlight = false, preserveEliminated = false) {
             const wasHighlighted = cell.classList.contains('targeting-highlight');
-            cell.classList.remove('empty', 'miss', 'hit', 'sunk', 'targeting-highlight');
+            const wasEliminated = cell.classList.contains('eliminated');
+            cell.classList.remove('empty', 'miss', 'hit', 'sunk', 'targeting-highlight', 'eliminated');
             switch(state) {
                 case 0:
                     cell.classList.add('empty');
                     // Restore highlight if it should be preserved and cell is still empty
                     if (preserveHighlight && wasHighlighted) {
                         cell.classList.add('targeting-highlight');
+                    }
+                    // Restore eliminated if it should be preserved and cell is still empty
+                    if (preserveEliminated && wasEliminated) {
+                        cell.classList.add('eliminated');
                     }
                     break;
                 case 1:
@@ -133,11 +147,11 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
                     break;
             }
         }        // Function to update the entire grid display
-        function updateGrid(preserveHighlights = false) {
+        function updateGrid(preserveHighlights = false, preserveEliminated = false) {
             for (let row = 0; row < 10; row++) {
                 for (let col = 0; col < 10; col++) {
                     const cell = grid[row][col];
-                    updateCellClass(cell, gameBoard[row][col], preserveHighlights);
+                    updateCellClass(cell, gameBoard[row][col], preserveHighlights, preserveEliminated);
                 }
             }
         }// Function to update a specific cell
@@ -158,10 +172,10 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
             }
             updateGrid();
         }        // Function to set multiple cells at once
-        function setBoardState(newBoard, preserveHighlights = false) {
+        function setBoardState(newBoard, preserveHighlights = false, preserveEliminated = false) {
             if (newBoard.length === 10 && newBoard[0].length === 10) {
                 gameBoard = newBoard.map(row => [...row]); // Deep copy
-                updateGrid(preserveHighlights);
+                updateGrid(preserveHighlights, preserveEliminated);
             }
         }
 
@@ -188,6 +202,33 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
             for (let row = 0; row < 10; row++) {
                 for (let col = 0; col < 10; col++) {
                     grid[row][col].classList.remove('targeting-highlight');
+                }
+            }
+        }
+        
+        // Function to highlight eliminated squares
+        function highlightEliminatedSquares(squares) {
+            // Clear any existing eliminated highlights
+            clearEliminatedHighlights();
+            
+            // Add eliminated class to specified squares
+            squares.forEach(square => {
+                const [row, col] = square;
+                if (row >= 0 && row < 10 && col >= 0 && col < 10) {
+                    const cell = grid[row][col];
+                    // Only highlight if it's an empty cell
+                    if (gameBoard[row][col] === 0) {
+                        cell.classList.add('eliminated');
+                    }
+                }
+            });
+        }
+        
+        // Function to clear eliminated highlights
+        function clearEliminatedHighlights() {
+            for (let row = 0; row < 10; row++) {
+                for (let col = 0; col < 10; col++) {
+                    grid[row][col].classList.remove('eliminated');
                 }
             }
         }
@@ -365,11 +406,12 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
                 const data = JSON.parse(event.data);
                 
                 if (data.type === 'board_update') {
-                    // Update the board with new state from Python, preserving highlights
-                    setBoardState(data.board, true);
+                    // Update the board with new state from Python, preserving highlights and eliminated squares
+                    setBoardState(data.board, true, true);
                 } else if (data.type === 'game_over') {
                     console.log(`Game over in ${data.moves} moves!`);
                     clearTargetingHighlights();
+                    clearEliminatedHighlights();
                 } else if (data.type === 'targeting_highlights') {
                     // Enable smooth transitions for video mode
                     cells.forEach(cell => cell.classList.add('smooth-transition'));
@@ -378,6 +420,9 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
                 } else if (data.type === 'clear_highlights') {
                     // Clear targeting highlights
                     clearTargetingHighlights();
+                } else if (data.type === 'eliminated_squares') {
+                    // Highlight eliminated squares in light blue for parity hunt
+                    highlightEliminatedSquares(data.squares);
                 }
             };
             
