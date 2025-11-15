@@ -106,6 +106,7 @@ class BattleshipRunner:
         self.multi_agent_mode = False  # Track if running multiple agents
         self.agent_stats = {}  # Store stats per agent
         self.selected_agents = [1, 2, 3, 4]  # Which agents to run in multi-agent mode
+        self.parallel_batch_size = 50  # How many games to run in parallel at once
     
     def get_agent_name(self, choice: str) -> str:
         """Get agent name from choice number."""
@@ -205,7 +206,22 @@ class BattleshipRunner:
             print("   [n] No - Run in background (recommended for multi-agent)")
             visual_choice = input("   Enter choice (y/n): ").strip().lower()
             use_visual = visual_choice in ['y', 'yes']
-              # Multi-agent always runs in background for speed
+            
+            # Configure parallel batch size for non-visual mode
+            if not use_visual:
+                print("\n4) Parallel batch size (how many games to run simultaneously)?")
+                print("   Higher = faster but more CPU/memory usage")
+                print("   Recommended: 50-100 for most systems, 20-30 for Probability agent")
+                batch_input = input("   Enter batch size (default 50): ").strip() or "50"
+                try:
+                    self.parallel_batch_size = int(batch_input)
+                    if self.parallel_batch_size < 1:
+                        self.parallel_batch_size = 50
+                except ValueError:
+                    self.parallel_batch_size = 50
+                print(f"   ✓ Using batch size: {self.parallel_batch_size}")
+            
+            # Multi-agent always runs in background for speed
             if use_visual:
                 print("   NOTE: Visual mode will slow down multi-agent runs significantly")
             
@@ -330,14 +346,70 @@ class BattleshipRunner:
         
         return game.moves
     
+    async def run_single_game_for_agent(self, agent_class, name: str) -> int:
+        """Run a single game for a specific agent class (used for parallel execution)."""
+        # Create game and agent
+        game = BattleshipGame()
+        game.setup_board()
+        agent = agent_class()
+        
+        # Play the game
+        while not game.is_game_over():
+            row, col = agent.get_move()
+            result, sunk_ship = game.make_guess(row, col)
+            agent.update(row, col, result, sunk_ship)
+        
+        # Save to CSV (thread-safe for async)
+        self.save_game_to_csv(name, game.moves)
+        return game.moves
+    
     async def run_games(self, num_games: int):
-        """Run multiple games with a progress bar."""
-        with tqdm(total=num_games, desc="Running games", unit="game", 
-                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
-            for i in range(1, num_games + 1):
-                moves = await self.run_single_game(i, num_games)
-                self.stats.add_game(moves)
-                pbar.update(1)
+        """Run multiple games with a progress bar, using parallel execution for non-visual mode."""
+        if self.use_visual:
+            # Visual mode must run sequentially
+            with tqdm(total=num_games, desc="Running games", unit="game", 
+                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                for i in range(1, num_games + 1):
+                    moves = await self.run_single_game(i, num_games)
+                    self.stats.add_game(moves)
+                    pbar.update(1)
+        else:
+            # Background mode can run in parallel batches
+            agent_name = self.get_agent_name(self.brain_choice)
+            
+            # Determine agent class
+            if self.brain_choice == "2":
+                agent_class = HuntAndTargetAgent
+            elif self.brain_choice == "3":
+                agent_class = ParityHuntAgent
+            elif self.brain_choice == "4":
+                agent_class = ProbabilityAgent
+            else:
+                agent_class = RandomAgent
+            
+            with tqdm(total=num_games, desc="Running games", unit="game", 
+                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                
+                # Run games in batches
+                for batch_start in range(0, num_games, self.parallel_batch_size):
+                    batch_end = min(batch_start + self.parallel_batch_size, num_games)
+                    batch_count = batch_end - batch_start
+                    
+                    # Create tasks for this batch
+                    tasks = [
+                        self.run_single_game_for_agent(agent_class, agent_name)
+                        for _ in range(batch_count)
+                    ]
+                    
+                    # Run batch in parallel
+                    results = await asyncio.gather(*tasks)
+                    
+                    # Record results
+                    for move_count in results:
+                        self.stats.add_game(move_count)
+                    
+                    # Update progress bar
+                    pbar.update(batch_count)
     
     async def start_server_and_run(self, num_games: int):
         """Start the web server and run games."""
@@ -368,7 +440,7 @@ class BattleshipRunner:
         self.stats.print_summary()
     
     async def run_multi_agent_comparison(self, num_games: int, use_visual: bool):
-        """Run all agents back-to-back and compare their statistics."""
+        """Run all agents with parallel game execution and compare their statistics."""
         all_agents_config = [
             ("1", "Random", RandomAgent),
             ("2", "Hunt and Target", HuntAndTargetAgent),
@@ -378,6 +450,15 @@ class BattleshipRunner:
         
         # Filter agents based on user selection
         agents_config = [config for config in all_agents_config if int(config[0]) in self.selected_agents]
+        
+        print("\n" + "=" * 70)
+        print("🚀 PARALLEL GAME EXECUTION")
+        print("=" * 70)
+        print(f"Running {len(agents_config)} agent(s) with {num_games} games each")
+        if not use_visual:
+            print(f"Batch size: {self.parallel_batch_size} games at a time")
+        print("=" * 70)
+        print()
         
         # Store results for each agent
         for choice, name, agent_class in agents_config:
