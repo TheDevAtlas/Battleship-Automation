@@ -5,7 +5,6 @@ from typing import List, Tuple, Set, Optional
 import statistics
 import numpy as np
 
-
 class BattleshipGame:
     """Represents a single battleship game instance with vectorized operations."""
     
@@ -29,8 +28,7 @@ class BattleshipGame:
         self.moves = 0
         self.hits = 0
         self.misses = 0
-        
-    def setup_board(self):
+          def setup_board(self):
         """Place ships randomly on the board."""
         self.ship_tiles = []  # Reset ship tracking
         for ship_size in self.ships:
@@ -95,8 +93,7 @@ class BattleshipGame:
         
         self.guessed_positions.add((row, col))
         self.moves += 1
-        
-        if (row, col) in self.ship_positions:
+          if (row, col) in self.ship_positions:
             self.board[row, col] = 2  # Hit (NumPy array indexing)
             self.hits += 1
             
@@ -106,8 +103,7 @@ class BattleshipGame:
                     # Check if all positions of this ship have been hit
                     if ship.issubset(self.guessed_positions):
                         return 'hit', ship
-                    break
-            
+                    break            
             return 'hit', None
         else:
             self.board[row, col] = 1  # Miss (NumPy array indexing)
@@ -117,8 +113,7 @@ class BattleshipGame:
     def is_game_over(self) -> bool:
         """Check if all ships have been sunk."""
         return self.hits == sum(self.ships)
-    
-    def get_board_state(self) -> List[List[int]]:
+        return self.hits == sum(self.ships)    def get_board_state(self) -> List[List[int]]:
         """Get the current board state as a list of lists for compatibility."""
         return self.board.tolist()
     
@@ -138,10 +133,9 @@ class BattleshipGame:
 
 
 class RandomAgent:
-    """Agent that makes random guesses with pre-shuffled positions."""
+    """Agent that makes random guesses."""
     
     def __init__(self):
-        # Pre-generate all positions once and shuffle (avoid overhead per call)
         self.available_positions = [(r, c) for r in range(10) for c in range(10)]
         random.shuffle(self.available_positions)
         self.position_index = 0
@@ -168,14 +162,12 @@ class HuntAndTargetAgent:
         self.available_positions = [(r, c) for r in range(10) for c in range(10)]
         random.shuffle(self.available_positions)
         self.position_index = 0
-        
-        # Tracking hits and targets
+          # Tracking hits and targets
         self.hits: Set[Tuple[int, int]] = set()
         self.misses: Set[Tuple[int, int]] = set()
         self.all_guessed: Set[Tuple[int, int]] = set()  # All positions we've guessed
         self.targets: List[Tuple[int, int]] = []  # Queue of positions to target
         self.current_ship_hits: Set[Tuple[int, int]] = set()  # Hits on the current ship being targeted
-    
     def get_move(self) -> Tuple[int, int]:
         """Get the next move using hunt and target strategy."""
         # If we have targets to pursue, target mode
@@ -321,7 +313,6 @@ class ParityHuntAgent:
                 # If (row + col) is not divisible by smallest_ship, eliminate it
                 if (row + col) % smallest_ship != 0:
                     self.eliminated_squares.add((row, col))
-    
     def get_eliminated_squares(self) -> List[Tuple[int, int]]:
         """Get the current list of eliminated squares for visual display.
         Only returns squares that are currently eliminated AND not yet guessed.
@@ -483,7 +474,7 @@ class ProbabilityAgent:
     
     def _generate_prob_map(self):
         """Generate probability heat map based on remaining ships and known information."""
-        self.prob_map[:] = 0  # In-place reset instead of creating new array
+        self.prob_map = np.zeros((10, 10))
         
         # For each remaining ship size, calculate probabilities
         for ship_size in self.remaining_ships:
@@ -585,7 +576,6 @@ class ProbabilityAgent:
         self._generate_prob_map()
         
         # Find the square with the highest probability that we haven't guessed
-        # Use NumPy's argmax for faster lookups
         max_prob = -1
         best_move = None
         
@@ -677,8 +667,7 @@ class GameStatistics:
         print(f"Worst Game (most moves): {summary['worst_game']}")
         print(f"Median Moves: {summary['median_moves']:.1f}")
         print("=" * 50)
-        
-        # Print distribution
+          # Print distribution
         if self.game_moves:
             print("\nMove Distribution:")
             ranges = [(0, 20), (21, 30), (31, 40), (41, 50), (51, 60), (61, 100)]
