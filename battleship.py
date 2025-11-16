@@ -4,14 +4,13 @@ import random
 from typing import List, Tuple, Set, Optional
 import statistics
 import numpy as np
-
+import numpy as np
 
 class BattleshipGame:
-    """Represents a single battleship game instance with vectorized operations."""
+    """Represents a single battleship game instance."""
     
     def __init__(self):
-        # Use NumPy array instead of nested lists for faster operations
-        self.board = np.zeros((10, 10), dtype=np.int8)
+        self.board = [[0 for _ in range(10)] for _ in range(10)]
         self.ship_positions: Set[Tuple[int, int]] = set()
         self.guessed_positions: Set[Tuple[int, int]] = set()
         self.moves = 0
@@ -19,16 +18,6 @@ class BattleshipGame:
         self.misses = 0
         self.ships = [5, 4, 3, 3, 2]  # Standard battleship ships
         self.ship_tiles: List[Set[Tuple[int, int]]] = []  # Track tiles for each ship
-        
-    def reset(self):
-        """Reset the game state without creating new objects (avoid deep copy)."""
-        self.board[:] = 0  # In-place reset, much faster than creating new array
-        self.ship_positions.clear()
-        self.guessed_positions.clear()
-        self.ship_tiles.clear()
-        self.moves = 0
-        self.hits = 0
-        self.misses = 0
         
     def setup_board(self):
         """Place ships randomly on the board."""
@@ -50,7 +39,9 @@ class BattleshipGame:
                 
             if not placed:
                 # If we couldn't place a ship, reset and try again
-                self.reset()
+                self.board = [[0 for _ in range(10)] for _ in range(10)]
+                self.ship_positions.clear()
+                self.ship_tiles = []
                 self.setup_board()
                 return
     
@@ -97,7 +88,7 @@ class BattleshipGame:
         self.moves += 1
         
         if (row, col) in self.ship_positions:
-            self.board[row, col] = 2  # Hit (NumPy array indexing)
+            self.board[row][col] = 2  # Hit
             self.hits += 1
             
             # Check if this hit sank a ship
@@ -110,38 +101,35 @@ class BattleshipGame:
             
             return 'hit', None
         else:
-            self.board[row, col] = 1  # Miss (NumPy array indexing)
+            self.board[row][col] = 1  # Miss
             self.misses += 1
             return 'miss', None
     
     def is_game_over(self) -> bool:
         """Check if all ships have been sunk."""
         return self.hits == sum(self.ships)
-    
     def get_board_state(self) -> List[List[int]]:
-        """Get the current board state as a list of lists for compatibility."""
-        return self.board.tolist()
+        """Get the current board state."""
+        return [row[:] for row in self.board]
     
     def get_board_state_with_sunk(self) -> List[List[int]]:
         """Get the current board state with sunk ships marked as state 3."""
-        # Use copy() instead of nested list comprehension (faster)
-        board_copy = self.board.copy()
+        board_copy = [row[:] for row in self.board]
         
         # Mark sunk ship positions
         for ship in self.ship_tiles:
             if ship.issubset(self.guessed_positions):
                 # This ship is sunk, mark all its positions as state 3
                 for row, col in ship:
-                    board_copy[row, col] = 3
+                    board_copy[row][col] = 3
         
-        return board_copy.tolist()
+        return board_copy
 
 
 class RandomAgent:
-    """Agent that makes random guesses with pre-shuffled positions."""
+    """Agent that makes random guesses."""
     
     def __init__(self):
-        # Pre-generate all positions once and shuffle (avoid overhead per call)
         self.available_positions = [(r, c) for r in range(10) for c in range(10)]
         random.shuffle(self.available_positions)
         self.position_index = 0
@@ -168,14 +156,12 @@ class HuntAndTargetAgent:
         self.available_positions = [(r, c) for r in range(10) for c in range(10)]
         random.shuffle(self.available_positions)
         self.position_index = 0
-        
-        # Tracking hits and targets
+          # Tracking hits and targets
         self.hits: Set[Tuple[int, int]] = set()
         self.misses: Set[Tuple[int, int]] = set()
         self.all_guessed: Set[Tuple[int, int]] = set()  # All positions we've guessed
         self.targets: List[Tuple[int, int]] = []  # Queue of positions to target
         self.current_ship_hits: Set[Tuple[int, int]] = set()  # Hits on the current ship being targeted
-    
     def get_move(self) -> Tuple[int, int]:
         """Get the next move using hunt and target strategy."""
         # If we have targets to pursue, target mode
@@ -321,7 +307,6 @@ class ParityHuntAgent:
                 # If (row + col) is not divisible by smallest_ship, eliminate it
                 if (row + col) % smallest_ship != 0:
                     self.eliminated_squares.add((row, col))
-    
     def get_eliminated_squares(self) -> List[Tuple[int, int]]:
         """Get the current list of eliminated squares for visual display.
         Only returns squares that are currently eliminated AND not yet guessed.
@@ -483,7 +468,7 @@ class ProbabilityAgent:
     
     def _generate_prob_map(self):
         """Generate probability heat map based on remaining ships and known information."""
-        self.prob_map[:] = 0  # In-place reset instead of creating new array
+        self.prob_map = np.zeros((10, 10))
         
         # For each remaining ship size, calculate probabilities
         for ship_size in self.remaining_ships:
@@ -585,7 +570,6 @@ class ProbabilityAgent:
         self._generate_prob_map()
         
         # Find the square with the highest probability that we haven't guessed
-        # Use NumPy's argmax for faster lookups
         max_prob = -1
         best_move = None
         
@@ -633,6 +617,182 @@ class ProbabilityAgent:
         return self.prob_map.copy()
 
 
+class MonteCarloAgent:
+    """Agent that uses Monte Carlo simulation to determine optimal moves."""
+    
+    def __init__(self, monte_carlo_samples: int = 1000):
+        # Tracking hits and targets
+        self.hits: Set[Tuple[int, int]] = set()
+        self.misses: Set[Tuple[int, int]] = set()
+        self.all_guessed: Set[Tuple[int, int]] = set()
+        
+        # Track remaining ships (we know these: 5, 4, 3, 3, 2)
+        self.remaining_ships = [5, 4, 3, 3, 2]
+        
+        # Track unsunk hits (hits that are part of ships we haven't sunk yet)
+        self.unsunk_hits: Set[Tuple[int, int]] = set()
+          # Monte Carlo parameters
+        self.monte_carlo_samples = monte_carlo_samples
+        
+        # Heat map from simulations
+        self.heat_map = np.zeros((10, 10))
+    
+    def _simulate_ship_placement(self) -> Optional[np.ndarray]:
+        """Simulate a random valid placement of remaining ships on the board."""
+        # Create a simulation board (0 = empty, 1 = ship)
+        sim_board = np.zeros((10, 10), dtype=int)
+        
+        # Mark known misses and sunk ships as blocked
+        for row, col in self.misses:
+            sim_board[row, col] = -1  # Blocked
+        
+        for row, col in self.all_guessed:
+            if (row, col) not in self.unsunk_hits:
+                sim_board[row, col] = -1  # Blocked (already guessed and not an unsunk hit)
+        
+        # Try to place each remaining ship
+        for ship_size in self.remaining_ships:
+            placed = False
+            attempts = 0
+            max_attempts = 1000
+            
+            while not placed and attempts < max_attempts:
+                # Random orientation and position
+                horizontal = random.choice([True, False])
+                row = random.randint(0, 9)
+                col = random.randint(0, 9)
+                
+                # Check if ship can be placed
+                if self._can_place_ship_in_sim(sim_board, row, col, ship_size, horizontal):
+                    # Check if placement includes unsunk hits (if any exist for this ship type)
+                    ship_coords = self._get_ship_coords(row, col, ship_size, horizontal)
+                    
+                    # If we have unsunk hits, this ship must cover at least one
+                    if self.unsunk_hits:
+                        has_unsunk_hit = any(coord in self.unsunk_hits for coord in ship_coords)
+                        if not has_unsunk_hit:
+                            attempts += 1
+                            continue
+                    
+                    # Place the ship
+                    for r, c in ship_coords:
+                        sim_board[r, c] = 1
+                    placed = True
+                
+                attempts += 1
+            
+            # If we couldn't place a ship, this simulation is invalid
+            if not placed:
+                return None
+        
+        return sim_board
+    
+    def _can_place_ship_in_sim(self, sim_board: np.ndarray, row: int, col: int, 
+                                size: int, horizontal: bool) -> bool:
+        """Check if a ship can be placed at the given position in simulation."""
+        if horizontal:
+            if col + size > 10:
+                return False
+            for i in range(size):
+                if sim_board[row, col + i] != 0:
+                    return False
+        else:
+            if row + size > 10:
+                return False
+            for i in range(size):
+                if sim_board[row + i, col] != 0:
+                    return False
+        
+        return True
+    
+    def _get_ship_coords(self, row: int, col: int, size: int, 
+                         horizontal: bool) -> List[Tuple[int, int]]:
+        """Get the coordinates of a ship placement."""
+        coords = []
+        if horizontal:
+            for i in range(size):
+                coords.append((row, col + i))
+        else:
+            for i in range(size):
+                coords.append((row + i, col))
+        return coords
+    
+    def _run_monte_carlo_simulation(self):
+        """Run Monte Carlo simulation to generate heat map."""
+        # Reset heat map
+        self.heat_map = np.zeros((10, 10))
+        
+        successful_simulations = 0
+        
+        # Run simulations
+        for _ in range(self.monte_carlo_samples):
+            sim_board = self._simulate_ship_placement()
+            
+            # If simulation was valid, add to heat map
+            if sim_board is not None:
+                # Add ship positions to heat map (only where ships are placed)
+                self.heat_map += (sim_board == 1).astype(int)
+                successful_simulations += 1
+        
+        # Normalize by number of successful simulations
+        if successful_simulations > 0:
+            self.heat_map /= successful_simulations
+        
+        # Emphasize squares with unsunk hits
+        for row, col in self.unsunk_hits:
+            self.heat_map[row, col] *= 2.0  # Double weight for known hits
+    
+    def get_move(self) -> Tuple[int, int]:
+        """Get the next move using Monte Carlo simulation."""
+        # Run Monte Carlo simulation
+        self._run_monte_carlo_simulation()
+        
+        # Find the square with the highest value that we haven't guessed
+        max_value = -1
+        best_move = None
+        
+        for row in range(10):
+            for col in range(10):
+                if (row, col) not in self.all_guessed:
+                    if self.heat_map[row, col] > max_value:
+                        max_value = self.heat_map[row, col]
+                        best_move = (row, col)
+        
+        # Fallback (should never happen in a proper game)
+        if best_move is None:
+            for row in range(10):
+                for col in range(10):
+                    if (row, col) not in self.all_guessed:
+                        return (row, col)
+            return (random.randint(0, 9), random.randint(0, 9))
+        
+        return best_move
+    
+    def update(self, row: int, col: int, result: str, sunk_ship: Optional[Set[Tuple[int, int]]] = None):
+        """Update agent with the result of the last move."""
+        # Track all guessed positions
+        self.all_guessed.add((row, col))
+        
+        if result == 'hit':
+            self.hits.add((row, col))
+            self.unsunk_hits.add((row, col))
+            
+            # If a ship was sunk, remove it from remaining ships
+            if sunk_ship is not None:
+                ship_size = len(sunk_ship)
+                if ship_size in self.remaining_ships:
+                    self.remaining_ships.remove(ship_size)
+                
+                # Remove sunk ship positions from unsunk hits
+                self.unsunk_hits -= sunk_ship
+        elif result == 'miss':
+            self.misses.add((row, col))
+    
+    def get_heat_map(self) -> np.ndarray:
+        """Get the current heat map for visualization."""
+        return self.heat_map.copy()
+
+
 class GameStatistics:
     """Track statistics across multiple games."""
     
@@ -677,8 +837,7 @@ class GameStatistics:
         print(f"Worst Game (most moves): {summary['worst_game']}")
         print(f"Median Moves: {summary['median_moves']:.1f}")
         print("=" * 50)
-        
-        # Print distribution
+          # Print distribution
         if self.game_moves:
             print("\nMove Distribution:")
             ranges = [(0, 20), (21, 30), (31, 40), (41, 50), (51, 60), (61, 100)]

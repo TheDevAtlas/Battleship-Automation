@@ -393,16 +393,19 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
             if (randomizeInterval) {
                 clearInterval(randomizeInterval);
                 randomizeInterval = null;
-            }
-        }// WebSocket connection for Python control
-        let ws = null;
+            }        }
+
+        // Server-Sent Events connection for Python control
+        let eventSource = null;
         
-        function connectWebSocket() {
-            ws = new WebSocket('ws://localhost:8080/ws');
+        function connectSSE() {
+            eventSource = new EventSource('http://localhost:8080/events');
             
-            ws.onopen = () => {
-                console.log('Connected to Python backend');
-            };            ws.onmessage = (event) => {
+            eventSource.onopen = () => {
+                console.log('Connected to Python backend via SSE');
+            };
+            
+            eventSource.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
                 if (data.type === 'board_update') {
@@ -426,18 +429,17 @@ box-shadow: 0px 0px 55px 2px rgba(71,71,71,0.12);
                 }
             };
             
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
+            eventSource.onerror = (error) => {
+                console.error('SSE error:', error);
+                // SSE will automatically try to reconnect
             };
-            
-            ws.onclose = () => {
-                console.log('Disconnected from Python backend');
-            };
-        }        // Initialize the grid
+        }
+        
+        // Initialize the grid
         createGrid();
         
-        // Connect to WebSocket when page loads
-        connectWebSocket();
+        // Connect to SSE when page loads
+        connectSSE();
     </script>
 </body>
 </html>

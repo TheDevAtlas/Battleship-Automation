@@ -15,18 +15,19 @@ from battleship import BattleshipGame, RandomAgent, HuntAndTargetAgent, ParityHu
 
 
 class BattleshipServer:
-    """Web server to host the HTML and handle WebSocket communication."""
+    """Web server to host the HTML and handle SSE communication."""
     
     def __init__(self, use_visual: bool = True):
         self.app = web.Application()
-        self.websocket = None
+        self.sse_queue = asyncio.Queue()  # Queue for SSE messages
         self.use_visual = use_visual
+        self.client_connected = False
         self.setup_routes()
-        
+    
     def setup_routes(self):
-        """Setup HTTP and WebSocket routes."""
+        """Setup HTTP and SSE routes."""
         self.app.router.add_get('/', self.handle_index)
-        self.app.router.add_get('/ws', self.handle_websocket)
+        self.app.router.add_get('/events', self.handle_sse)
     
     async def handle_index(self, request):
         """Serve the index.html file."""
@@ -35,61 +36,68 @@ class BattleshipServer:
             content = f.read()
         return web.Response(text=content, content_type='text/html')
     
-    async def handle_websocket(self, request):
-        """Handle WebSocket connection."""
-        ws = web.WebSocketResponse()
-        await ws.prepare(request)
+    async def handle_sse(self, request):
+        """Handle Server-Sent Events connection."""
+        response = web.StreamResponse()
+        response.headers['Content-Type'] = 'text/event-stream'
+        response.headers['Cache-Control'] = 'no-cache'
+        response.headers['Connection'] = 'keep-alive'
+        await response.prepare(request)
         
-        self.websocket = ws
-        print("WebSocket connected")
+        self.client_connected = True
+        print("SSE client connected")
         
-        async for msg in ws:
-            if msg.type == aiohttp.WSMsgType.TEXT:
-                data = json.loads(msg.data)
-                # Handle any messages from the client if needed
-            elif msg.type == aiohttp.WSMsgType.ERROR:
-                print(f'WebSocket error: {ws.exception()}')
-        print("WebSocket disconnected")
-        self.websocket = None
-        return ws
+        try:
+            while True:
+                # Get message from queue
+                message = await self.sse_queue.get()
+                
+                # Send as SSE format
+                data = f"data: {json.dumps(message)}\n\n"
+                await response.write(data.encode('utf-8'))
+                await response.drain()
+                
+        except Exception as e:
+            print(f"SSE connection closed: {e}")
+        finally:
+            self.client_connected = False
+            print("SSE client disconnected")
+        
+        return response
+    
     async def send_board_update(self, board: list):
-        """Send board update to the connected WebSocket client."""
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.send_json({
-                'type': 'board_update',
-                'board': board
-            })
+        """Send board update to the connected SSE client."""
+        await self.sse_queue.put({
+            'type': 'board_update',
+            'board': board
+        })
     
     async def send_game_over(self, moves: int):
         """Send game over message to client."""
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.send_json({
-                'type': 'game_over',
-                'moves': moves
-            })
+        await self.sse_queue.put({
+            'type': 'game_over',
+            'moves': moves
+        })
     
     async def send_targeting_highlights(self, target_squares: list):
         """Send targeting highlights to show suspected squares with yellow gradient."""
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.send_json({
-                'type': 'targeting_highlights',
-                'squares': target_squares
-            })
+        await self.sse_queue.put({
+            'type': 'targeting_highlights',
+            'squares': target_squares
+        })
     
     async def send_clear_highlights(self):
         """Send message to clear targeting highlights."""
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.send_json({
-                'type': 'clear_highlights'
-            })
+        await self.sse_queue.put({
+            'type': 'clear_highlights'
+        })
     
     async def send_eliminated_squares(self, eliminated_squares: list):
         """Send eliminated squares to show in very light blue."""
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.send_json({
-                'type': 'eliminated_squares',
-                'squares': eliminated_squares
-            })
+        await self.sse_queue.put({
+            'type': 'eliminated_squares',
+            'squares': eliminated_squares
+        })
 
 
 class BattleshipRunner:
@@ -400,8 +408,7 @@ class BattleshipRunner:
                         self.run_single_game_for_agent(agent_class, agent_name)
                         for _ in range(batch_count)
                     ]
-                    
-                    # Run batch in parallel
+                      # Run batch in parallel
                     results = await asyncio.gather(*tasks)
                     
                     # Record results
@@ -419,11 +426,26 @@ class BattleshipRunner:
         site = web.TCPSite(runner, 'localhost', 8080)
         await site.start()
         print(f"Server started at http://localhost:8080")
-        if self.use_visual:            # Open browser
+        
+        if self.use_visual:
+            # Open browser
             webbrowser.open('http://localhost:8080')
             print("Opening browser...")
-            # Removed artificial delay - super speed mode!
-          # Run the games
+            print("Waiting for SSE client connection...")
+            
+            # Wait for SSE client to connect (max 10 seconds)
+            wait_time = 0
+            while not self.server.client_connected and wait_time < 10:
+                await asyncio.sleep(0.5)
+                wait_time += 0.5
+            
+            if self.server.client_connected:
+                print("✓ SSE client connected! Starting games...")
+                await asyncio.sleep(0.5)  # Brief additional delay for stability
+            else:
+                print("⚠ Warning: SSE client not connected after 10 seconds, but continuing anyway...")
+        
+        # Run the games
         await self.run_games(num_games)
         
         # Print statistics immediately after games complete
