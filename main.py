@@ -560,55 +560,89 @@ class BattleshipRunner:
         print("\n" + "=" * 70)
     
     def visualize_multi_agent_results(self):
-        """Create a Seaborn line graph visualization of agent performance."""
+        """Create a line graph visualization of agent performance, including Monte Carlo."""
         # Set dark mode style
         plt.style.use('dark_background')
         sns.set_palette("husl")
-          # Create figure
+
+        # Create figure
         fig, ax = plt.subplots(figsize=(12, 7))
-        
-        # Define aesthetic colors for dark mode
-        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFD700']  # Added golden/yellow for Probability
-        
-        # Process data for each agent
+
+        # Define aesthetic colors for the 4 built-in agents
+        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFD700']  # Random, H&T, Parity, Probability
+
+        # Plot all agents we have in self.agent_stats
         for idx, (agent_name, data) in enumerate(self.agent_stats.items()):
             moves = data['moves']
-            
-            # Count frequency of each move count
+
             move_counter = Counter(moves)
-            
-            # Sort by move count (x-axis)
             x_values = sorted(move_counter.keys())
             y_values = [move_counter[x] for x in x_values]
-            
-            # Plot line
-            ax.plot(x_values, y_values, marker='o', linewidth=2.5, 
-                   markersize=6, label=agent_name, color=colors[idx],
-                   alpha=0.8)
-        
+
+            ax.plot(
+                x_values,
+                y_values,
+                marker='o',
+                linewidth=2.5,
+                markersize=6,
+                label=agent_name,
+                color=colors[idx % len(colors)],
+                alpha=0.8,
+            )
+
+        # --- NEW: Add Monte Carlo line from existing CSV data ---
+        monte_carlo_path = Path(__file__).parent / 'Monte_Carlo.csv'
+        if monte_carlo_path.exists():
+            monte_moves = []
+            with open(monte_carlo_path, 'r', newline='') as f:
+                reader = csv.reader(f)
+                next(reader, None)  # skip header if present
+                for row in reader:
+                    if not row:
+                        continue
+                    try:
+                        monte_moves.append(int(row[0]))
+                    except ValueError:
+                        continue
+
+            if monte_moves:
+                mc_counter = Counter(monte_moves)
+                mc_x = sorted(mc_counter.keys())
+                mc_y = [mc_counter[x] for x in mc_x]
+
+                # Solid RED line for Monte Carlo
+                ax.plot(
+                    mc_x,
+                    mc_y,
+                    marker='o',
+                    linewidth=2.5,
+                    markersize=6,
+                    label='Monte Carlo',
+                    color='#FF0000',
+                    alpha=0.9,
+                    zorder=10,
+                )
+
         # Styling
         ax.set_xlabel('Number of Moves to Finish Game', fontsize=14, fontweight='bold')
         ax.set_ylabel('Number of Games Finished', fontsize=14, fontweight='bold')
-        ax.set_title('Battleship Agent Performance Comparison', fontsize=16, fontweight='bold', pad=20)
-        
-        # Grid for better readability
+        ax.set_title('Battleship Agent Performance Comparison', fontsize=16,
+                     fontweight='bold', pad=20)
+
         ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-        
-        # Legend
         ax.legend(fontsize=12, loc='best', framealpha=0.9)
-        
-        # Tight layout
+
         plt.tight_layout()
-        
-        # Save the figure
+
+        # Save + show
         output_path = Path(__file__).parent / 'agent_comparison.png'
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='#1a1a1a')
         print(f"\n📊 Visualization saved to: {output_path}")
-          # Show the plot
         plt.show()
-        
+
         print("✓ Visualization complete!")
-    
+
+
     def run(self):
         """Main entry point."""
         self.brain_choice, num_games, self.use_visual, self.use_video_mode, self.show_targeting_highlights = self.get_user_input()
